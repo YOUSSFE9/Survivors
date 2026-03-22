@@ -1,0 +1,46 @@
+/* index.css — Mobile-first reset for the game */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #0a0e27;
+  /* Prevent iOS Safari bounce/rubber-band scroll */
+  overscroll-behavior: none;
+  /* Prevent double-tap zoom */
+  touch-action: manipulation;
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+  position: fixed;
+  top: 0; left: 0;
+}
+
+/* Game canvas container — allow all touch events */
+#phaser-game {
+  width: 100% !important;
+  height: 100% !important;
+  position: fixed !important;
+  top: 0; left: 0;
+  /* Allow multi-touch without triggering browser gestures */
+  touch-action: none;
+  /* Prevent text/image selection while tapping */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+canvas {
+  display: block;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  /* Prevent iOS long-press pop-up */
+  -webkit-touch-callout: none;
+}
