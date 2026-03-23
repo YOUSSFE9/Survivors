@@ -35,9 +35,9 @@ const httpServer = http.createServer(app);
 
 const gameServer = new colyseus.Server({ server: httpServer });
 
-gameServer.define('duel',  MazeRoom, { mode: 'duel',  maxPlayers: 2,  teams: false });
-gameServer.define('squad', MazeRoom, { mode: 'squad', maxPlayers: 8,  teams: true  });
-gameServer.define('war',   MazeRoom, { mode: 'war',   maxPlayers: 20, teams: false });
+gameServer.define('duel', MazeRoom, { mode: 'duel', maxPlayers: 2, teams: false });
+gameServer.define('squad', MazeRoom, { mode: 'squad', maxPlayers: 8, teams: true });
+gameServer.define('war', MazeRoom, { mode: 'war', maxPlayers: 20, teams: false });
 gameServer.define('lobby', LobbyRoom);
 
 httpServer.listen(PORT, () => {
