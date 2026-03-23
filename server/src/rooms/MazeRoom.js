@@ -56,6 +56,7 @@ class MazeRoom extends colyseus.Room {
         this.bulletCounter = 0;
         this._portalSpawned = false;
         
+        this.hostSessionId = null; // First player to join becomes host
         this.countdownTimer = null;
         this.countdownSeconds = 0;
 
@@ -70,6 +71,27 @@ class MazeRoom extends colyseus.Room {
 
         this.onMessage('pickup_key', (client, msg) => {
             this._handlePickup(client.sessionId, msg.keyId);
+        });
+
+        // Host controls
+        this.onMessage('host_start', (client) => {
+            if (client.sessionId !== this.hostSessionId) return;
+            this._triggerCountdown();
+        });
+
+        this.onMessage('kick_player', (client, { targetId }) => {
+            if (client.sessionId !== this.hostSessionId) return;
+            const target = this.clients.find(c => c.sessionId === targetId);
+            if (target) target.leave(4000, 'kicked');
+        });
+
+        this.onMessage('move_team', (client, { targetId }) => {
+            if (client.sessionId !== this.hostSessionId) return;
+            const p = this.gs.players[targetId];
+            if (!p) return;
+            p.team = p.team === 'red' ? 'blue' : 'red';
+            p.tint = p.team === 'red' ? 0xff4444 : 0x4488ff;
+            this._broadcastLobbyState();
         });
 
         this.onMessage('enter_portal', (client) => {
@@ -92,6 +114,11 @@ class MazeRoom extends colyseus.Room {
 
     onJoin(client, opts = {}) {
         const playerCount = Object.keys(this.gs.players).length;
+        
+        // First player becomes host
+        if (!this.hostSessionId) {
+            this.hostSessionId = client.sessionId;
+        }
 
         let team = 'none';
         let tint = TINTS[playerCount % TINTS.length];
@@ -132,6 +159,9 @@ class MazeRoom extends colyseus.Room {
             client.send('red_room_code', { code: this.redCode });
             client.send('blue_room_code', { code: this.blueCode });
         }
+        
+        // Tell client if they are host
+        client.send('host_status', { isHost: client.sessionId === this.hostSessionId });
 
         // Broadcast updated lobby/state
         this._broadcastLobbyState();
@@ -142,14 +172,23 @@ class MazeRoom extends colyseus.Room {
     }
 
     onLeave(client) {
+        const wasHost = client.sessionId === this.hostSessionId;
         delete this.gs.players[client.sessionId];
         this.broadcast('player_left', client.sessionId);
-        this._broadcastLobbyState();
-        this._checkStart(); // Check if we need to cancel countdown
-        
-        if (Object.keys(this.gs.players).length === 0) {
-            this.disconnect();
+
+        // Transfer host to next player if host left
+        if (wasHost) {
+            const remaining = Object.keys(this.gs.players);
+            this.hostSessionId = remaining.length > 0 ? remaining[0] : null;
+            if (this.hostSessionId) {
+                const newHost = this.clients.find(c => c.sessionId === this.hostSessionId);
+                if (newHost) newHost.send('host_status', { isHost: true });
+            }
+            this.broadcast('new_host', { hostId: this.hostSessionId });
         }
+
+        this._broadcastLobbyState();
+        if (Object.keys(this.gs.players).length === 0) this.disconnect();
     }
 
     onDispose() {
@@ -167,45 +206,43 @@ class MazeRoom extends colyseus.Room {
     }
 
     _checkStart() {
-        if (this.gs.phase !== 'waiting') return;
-        
+        // Cancels countdown if room falls below minimum players
+        if (!this.countdownTimer) return;
         const all = Object.values(this.gs.players);
-        let readyToStart = false;
-        let countdownTime = 10;
-        
-        if (this.options.mode === 'duel' && all.length === 2) {
-            readyToStart = true;
-            countdownTime = 5;
-        }
-        if (this.options.mode === 'war' && all.length >= 2) {
-            readyToStart = true;
-            countdownTime = 10;
-        }
+        let stillValid = false;
+        if (this.options.mode === 'duel' && all.length >= 2) stillValid = true;
+        if (this.options.mode === 'war' && all.length >= 2) stillValid = true;
         if (this.options.mode === 'squad') {
             const red = all.filter(p => p.team === 'red').length;
             const blue = all.filter(p => p.team === 'blue').length;
-            if (red > 0 && blue > 0) readyToStart = true;
-            countdownTime = 10;
+            if (red > 0 && blue > 0) stillValid = true;
         }
-
-        if (readyToStart && !this.countdownTimer) {
-            this.countdownSeconds = countdownTime;
-            this.broadcast('countdown', { seconds: this.countdownSeconds });
-            this.countdownTimer = this.clock.setInterval(() => {
-                this.countdownSeconds--;
-                if (this.countdownSeconds <= 0) {
-                    this.countdownTimer.clear();
-                    this.countdownTimer = null;
-                    this._startGame();
-                } else {
-                    this.broadcast('countdown', { seconds: this.countdownSeconds });
-                }
-            }, 1000);
-        } else if (!readyToStart && this.countdownTimer) {
+        if (!stillValid) {
             this.countdownTimer.clear();
             this.countdownTimer = null;
             this.broadcast('countdown', { seconds: null });
         }
+    }
+
+    _triggerCountdown() {
+        if (this.gs.phase !== 'waiting' || this.countdownTimer) return;
+        const all = Object.values(this.gs.players);
+        let countdownTime = 5;
+        if (this.options.mode === 'war') countdownTime = 10;
+        if (this.options.mode === 'squad') countdownTime = 10;
+        
+        this.countdownSeconds = countdownTime;
+        this.broadcast('countdown', { seconds: this.countdownSeconds });
+        this.countdownTimer = this.clock.setInterval(() => {
+            this.countdownSeconds--;
+            if (this.countdownSeconds <= 0) {
+                this.countdownTimer.clear();
+                this.countdownTimer = null;
+                this._startGame();
+            } else {
+                this.broadcast('countdown', { seconds: this.countdownSeconds });
+            }
+        }, 1000);
     }
 
     _startGame() {

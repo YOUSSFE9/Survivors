@@ -5,6 +5,7 @@ import {
 } from '../firebase/config';
 import { enterGameFullscreen } from '../utils/mobileUtils';
 import OnlineLobby from './OnlineLobby';
+import SettingsModal from './SettingsModal';
 import './LandingPage.css';
 
 /**
@@ -81,6 +82,8 @@ export default function LandingPage({ onStartGame }) {
 
     return (
         <div className="landing-page">
+            {/* Settings Gear Button */}
+            <SettingsModal />
             {/* Animated starfield */}
             <div className="starfield">
                 {stars.map((star) => (

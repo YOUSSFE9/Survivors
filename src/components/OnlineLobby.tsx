@@ -69,26 +69,36 @@ export default function OnlineLobby({ uid, playerName, onBack, onMatchFound }: P
     const [players, setPlayers] = useState<PlayerEntry[]>([]);
     const [countdown, setCountdown] = useState<number | null>(null);
     const [myTeam, setMyTeam] = useState<string>('');
+    const [isHost, setIsHost] = useState(false);
+    const [roomRef, setRoomRef] = useState<any>(null);
 
     /* ── Listen to room messages after joining ── */
     const listenRoom = useCallback((room: any, resolvedMode: ModeId) => {
+        setRoomRef(room);
         // Player list updates
         room.onMessage('lobby_players', (list: PlayerEntry[]) => {
             setPlayers(list);
-            // Find my own team
             const me = list.find((p: PlayerEntry) => p.sessionId === room.sessionId);
             if (me) setMyTeam(me.team);
         });
+        // Host status
+        room.onMessage('host_status', ({ isHost: h }: { isHost: boolean }) => {
+            setIsHost(h);
+        });
+        room.onMessage('new_host', ({ hostId }: { hostId: string }) => {
+            setIsHost(room.sessionId === hostId);
+        });
         // Countdown
-        room.onMessage('countdown', ({ seconds }: { seconds: number }) => {
+        room.onMessage('countdown', ({ seconds }: { seconds: number | null }) => {
             setCountdown(seconds);
-            setStatus(`🔥 تبدأ المباراة خلال ${seconds} ثوانٍ...`);
+            if (seconds != null) setStatus(`🔥 تبدأ المباراة خلال ${seconds} ثوانٍ...`);
+            else setStatus('في انتظار اللاعبين...');
         });
         // Game started
         room.onMessage('game_started', () => {
             onMatchFound({ mode: resolvedMode, roomId: room.id });
         });
-        // Error from server
+        // Kicked
         room.onMessage('error', ({ msg }: { msg: string }) => {
             setStatus(`❌ ${msg}`);
             setBusy(false);
@@ -219,13 +229,13 @@ export default function OnlineLobby({ uid, playerName, onBack, onMatchFound }: P
                             <div style={S.sectionTitle}>اللاعبون ({players.length})</div>
                             {mode === 'squad' ? (
                                 <div style={{ display: 'flex', gap: 16 }}>
-                                    <TeamColumn title="🔴 الفريق الأحمر" players={redPlayers} color="#ff4455" myTeam={myTeam} myName={playerName} />
-                                    <TeamColumn title="🔵 الفريق الأزرق" players={bluePlayers} color="#4488ff" myTeam={myTeam} myName={playerName} />
+                                    <TeamColumn title="🔴 الفريق الأحمر" players={redPlayers} color="#ff4455" myTeam={myTeam} myName={playerName} isHost={isHost} room={roomRef} />
+                                    <TeamColumn title="🔵 الفريق الأزرق" players={bluePlayers} color="#4488ff" myTeam={myTeam} myName={playerName} isHost={isHost} room={roomRef} />
                                 </div>
                             ) : (
                                 <div style={S.playerList}>
                                     {(noTeamPlayers.length ? noTeamPlayers : players).map(p => (
-                                        <PlayerRow key={p.sessionId} player={p} myName={playerName} />
+                                        <PlayerRow key={p.sessionId} player={p} myName={playerName} isHost={isHost} room={roomRef} />
                                     ))}
                                 </div>
                             )}
@@ -239,7 +249,20 @@ export default function OnlineLobby({ uid, playerName, onBack, onMatchFound }: P
                         </div>
                     )}
 
-                    <button style={{ ...S.btn, background: '#333', marginTop: 16 }} onClick={handleLeave}>
+                    {/* Host controls */}
+                    {isHost && countdown === null && (
+                        <div style={{ background: 'rgba(68,255,170,0.06)', border: '1px solid rgba(68,255,170,0.2)', borderRadius: 12, padding: '12px 16px', marginBottom: 12, textAlign: 'center' }}>
+                            <div style={{ color: '#44ffaa', fontSize: 12, marginBottom: 10 }}>👑 أنت صاحب الغرفة</div>
+                            <button
+                                style={{ ...S.btn, background: '#22aa66', width: '100%', fontSize: 15 }}
+                                onClick={() => roomRef?.send('host_start')}
+                            >
+                                🚀 ابدأ المباراة الآن
+                            </button>
+                        </div>
+                    )}
+
+                    <button style={{ ...S.btn, background: '#333', marginTop: 8, width: '100%' }} onClick={handleLeave}>
                         ← مغادرة الغرفة
                     </button>
                 </div>
@@ -379,21 +402,22 @@ function CodeBox({ label, code, color }: { label: string; code: string; color: s
     );
 }
 
-function TeamColumn({ title, players, color, myTeam, myName }: { title: string; players: PlayerEntry[]; color: string; myTeam: string; myName: string }) {
+function TeamColumn({ title, players, color, myTeam, myName, isHost, room }: { title: string; players: PlayerEntry[]; color: string; myTeam: string; myName: string; isHost?: boolean; room?: any }) {
     return (
         <div style={{ flex: 1 }}>
             <div style={{ color, fontWeight: 700, fontSize: 13, marginBottom: 8 }}>{title} ({players.length})</div>
             {players.length === 0 ? (
                 <div style={{ color: 'rgba(255,255,255,0.2)', fontSize: 12, padding: 8 }}>في انتظار لاعبين...</div>
             ) : (
-                players.map(p => <PlayerRow key={p.sessionId} player={p} myName={myName} />)
+                players.map(p => <PlayerRow key={p.sessionId} player={p} myName={myName} isHost={isHost} room={room} showTeamSwitch={true} />)
             )}
         </div>
     );
 }
 
-function PlayerRow({ player, myName }: { player: PlayerEntry; myName: string }) {
+function PlayerRow({ player, myName, isHost, room, showTeamSwitch }: { player: PlayerEntry; myName: string; isHost?: boolean; room?: any; showTeamSwitch?: boolean }) {
     const isMe = player.name === myName;
+    const canControl = isHost && !isMe;
     return (
         <div style={{
             display: 'flex', alignItems: 'center', gap: 8,
@@ -404,6 +428,22 @@ function PlayerRow({ player, myName }: { player: PlayerEntry; myName: string }) 
             <span style={{ fontSize: 16 }}>{isMe ? '👤' : '🎮'}</span>
             <span style={{ flex: 1, fontSize: 13, color: isMe ? '#44ffaa' : '#cdd' }}>{player.name}</span>
             {isMe && <span style={{ fontSize: 11, color: '#44ffaa', opacity: 0.7 }}>أنت</span>}
+            {canControl && (
+                <>
+                    {showTeamSwitch && (
+                        <button onClick={() => room?.send('move_team', { targetId: player.sessionId })}
+                            style={{ padding: '2px 7px', borderRadius: 5, border: 'none', background: 'rgba(100,150,255,0.2)', color: '#88aaff', fontSize: 11, cursor: 'pointer' }}
+                            title="نقل الفريق">
+                            🔄
+                        </button>
+                    )}
+                    <button onClick={() => room?.send('kick_player', { targetId: player.sessionId })}
+                        style={{ padding: '2px 7px', borderRadius: 5, border: 'none', background: 'rgba(255,60,60,0.2)', color: '#ff6666', fontSize: 11, cursor: 'pointer' }}
+                        title="طرد">
+                        ❌
+                    </button>
+                </>
+            )}
         </div>
     );
 }
