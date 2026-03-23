@@ -6,7 +6,7 @@ import {
     signInWithPopup, signInWithRedirect, getRedirectResult,
     signOut, browserLocalPersistence, setPersistence
 } from 'firebase/auth';
-import { getFirestore, doc, getDoc, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { getFirestore, doc, getDoc, setDoc, updateDoc, increment, serverTimestamp } from 'firebase/firestore';
 
 const firebaseConfig = {
     apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -97,4 +97,4 @@ export async function savePlayerProfile(user) {
 }
 
 export { app, auth, firestore, firebaseEnabled, googleProvider };
-export { signInAnonymously, onAuthStateChanged, signInWithPopup, signOut, doc, getDoc };
+export { signInAnonymously, onAuthStateChanged, signInWithPopup, signOut, doc, getDoc, setDoc, updateDoc, increment, serverTimestamp };
