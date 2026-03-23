@@ -97,6 +97,7 @@ export default function OnlineLobby({ uid, playerName, avatarUrl = '', onBack, o
 
         // Game started → close preview, navigate
         room.onMessage('game_started', (data: any) => {
+            network.gameStartedData = data;
             if (searchTimerRef.current) { clearInterval(searchTimerRef.current); searchTimerRef.current = null; }
             setPreview(null);
             onMatchFound({ mode: m, roomId: room.id, mazeSeed: data?.seed || 0 });

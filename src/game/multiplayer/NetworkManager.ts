@@ -11,6 +11,7 @@ class NetworkManager {
     public room: Room | null = null;
     public sessionId: string = '';
     public connected = false;
+    public gameStartedData: any = null;
 
     connect() {
         if (!this.client) {

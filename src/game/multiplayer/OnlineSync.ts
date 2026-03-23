@@ -38,6 +38,15 @@ export class OnlineSync {
         this.room = room;
         this.mySessionId = room.sessionId;
         this._registerHandlers();
+
+        // Replay gameData from NetworkManager to spawn players immediately
+        if (network.gameStartedData?.players) {
+            for (const p of network.gameStartedData.players) {
+                if (p.sessionId !== this.mySessionId) {
+                    this._upsertRemote(p.sessionId, p);
+                }
+            }
+        }
     }
 
     // ══════════════════════════
@@ -55,10 +64,24 @@ export class OnlineSync {
 
         // Compact tick updates (20 Hz)
         this.room.onMessage('state_tick', (data) => {
-            for (const [sid, upd] of Object.entries(data.players)) {
+            // Update remote players
+            for (const [sid, upd] of Object.entries(data.players || {})) {
                 if (sid === this.mySessionId) continue;
                 const rp = this.remotePlayers.get(sid);
                 if (rp) rp.applyState(upd);
+            }
+
+            // Update remote monsters
+            for (const [id, m] of Object.entries(data.monsters || {})) {
+                this._upsertMonster(id, m);
+            }
+            // Remove dead monsters
+            for (const [id, rm] of this.remoteMonsters.entries()) {
+                if (!data.monsters?.[id]) {
+                    rm.sprite.destroy();
+                    rm.hpBar.destroy();
+                    this.remoteMonsters.delete(id);
+                }
             }
         });
 
@@ -114,6 +137,21 @@ export class OnlineSync {
         );
         rp.applyState(p);
         this.remotePlayers.set(sessionId, rp);
+    }
+
+    _upsertMonster(id, m) {
+        let obj = this.remoteMonsters.get(id);
+        if (!obj) {
+            const type = m.type || 'zombie';
+            const sprite = this.scene.add.image(m.x, m.y, type)
+                .setDisplaySize(36, 36).setDepth(8);
+            const hpBar = this.scene.add.rectangle(m.x, m.y - 22, 28, 4, 0xff3333).setDepth(9);
+            obj = { sprite, hpBar, maxHealth: m.health };
+            this.remoteMonsters.set(id, obj);
+        }
+        obj.sprite.setPosition(m.x, m.y).setVisible(m.alive);
+        obj.hpBar.setPosition(m.x, m.y - 22).setVisible(m.alive);
+        obj.hpBar.scaleX = Math.max(0, m.health / obj.maxHealth);
     }
 
     // ══════════════════════════

@@ -139,7 +139,15 @@ export class GameScene extends Phaser.Scene {
         this.events.on('breachModeChanged', (active) => { this._breachActive = active; });
 
         // Player events
-        this.events.on('playerDied',  () => { this.economy.onDeath(); this._emitHUDUpdate(); });
+        this.events.on('playerDied',  () => {
+            this.economy.onDeath();
+            this._emitHUDUpdate();
+            if (this.onlineMode) {
+                this.time.delayedCall(800, () => {
+                    this.scene.get('HUDScene')?.events?.emit('showLoss', { name: '' });
+                });
+            }
+        });
         this.events.on('inventoryChanged', () => this._emitHUDUpdate());
         this.events.on('healthChanged',    () => this._emitHUDUpdate());
 
@@ -237,6 +245,18 @@ export class GameScene extends Phaser.Scene {
             if (netMgr.room) {
                 this.onlineSync.attachRoom(netMgr.room);
                 console.log('[GameScene] Attached to existing room:', netMgr.room.id);
+
+                // Initialize local player position to match EXACT server spawn
+                const data = netMgr.gameStartedData;
+                if (data?.players) {
+                    const mine = data.players.find(p => p.sessionId === netMgr.sessionId);
+                    if (mine && this.player) {
+                        this.player.container.setPosition(mine.x, mine.y);
+                        if (this.player.container.body) {
+                            this.player.container.body.reset(mine.x, mine.y);
+                        }
+                    }
+                }
             } else {
                 // Fallback: join fresh (shouldn't normally happen)
                 await this.onlineSync.joinRoom(this.onlineMode, {
