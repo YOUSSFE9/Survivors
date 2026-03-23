@@ -26,10 +26,16 @@ const NAMES = [
 class MazeRoom extends colyseus.Room {
     onCreate(options) {
         this.options = options;
-        this.maxClients = options.maxPlayers;
+        this.maxClients = options.maxPlayers || 20;
 
         const seed = Math.floor(Math.random() * 999999);
         const mazeData = MazeGenerator.generate(20, 20, 3, seed);
+
+        // Squad Team Codes
+        if (options.mode === 'squad') {
+            this.redCode = this.roomId + '-R';
+            this.blueCode = this.roomId + '-B';
+        }
 
         // Plain JS game state (broadcast as JSON)
         this.gs = {
@@ -49,10 +55,13 @@ class MazeRoom extends colyseus.Room {
         this.playerInputs = {};
         this.bulletCounter = 0;
         this._portalSpawned = false;
+        
+        this.countdownTimer = null;
+        this.countdownSeconds = 0;
 
         // Handle messages
         this.onMessage('input', (client, msg) => {
-            this.playerInputs[client.sessionId] = msg;
+            if (this.gs.phase === 'playing') this.playerInputs[client.sessionId] = msg;
         });
 
         this.onMessage('shoot', (client, msg) => {
@@ -67,11 +76,6 @@ class MazeRoom extends colyseus.Room {
             this._handlePortal(client.sessionId);
         });
 
-        this.onMessage('ready', (client) => {
-            const p = this.gs.players[client.sessionId];
-            if (p) { p.ready = true; this._checkStart(); }
-        });
-
         // Game tick
         this.tickTimer = this.clock.setInterval(() => this._tick(), TICK_MS);
 
@@ -83,7 +87,7 @@ class MazeRoom extends colyseus.Room {
             if (alive < cap) this.monsterAI.spawnWave(Math.min(5, cap - alive));
         }, 10000);
 
-        console.log(`[MazeRoom] created — mode:${options.mode} maxPlayers:${options.maxPlayers}`);
+        console.log(`[MazeRoom] created — mode:${options.mode} maxPlayers:${this.maxClients}`);
     }
 
     onJoin(client, opts = {}) {
@@ -93,9 +97,14 @@ class MazeRoom extends colyseus.Room {
         let tint = TINTS[playerCount % TINTS.length];
 
         if (this.options.teams) {
-            const red  = Object.values(this.gs.players).filter(p => p.team === 'red').length;
-            const blue = Object.values(this.gs.players).filter(p => p.team === 'blue').length;
-            team = red <= blue ? 'red' : 'blue';
+            if (opts.reqTeam === 'red' || opts.reqTeam === 'blue' || opts.team === 'red' || opts.team === 'blue') {
+                team = opts.reqTeam || opts.team;
+            } else {
+                // Auto balance
+                const red  = Object.values(this.gs.players).filter(p => p.team === 'red').length;
+                const blue = Object.values(this.gs.players).filter(p => p.team === 'blue').length;
+                team = red <= blue ? 'red' : 'blue';
+            }
             tint = team === 'red' ? 0xff4444 : 0x4488ff;
         }
 
@@ -113,19 +122,21 @@ class MazeRoom extends colyseus.Room {
             health: 100,
             maxHealth: 100,
             alive: true,
-            ready: false,
             keys: 0,
             kills: 0,
             weapon: '',
         };
 
-        // Broadcast updated state to all
-        this._broadcastState();
-
-        // War auto-start at 2+ players
-        if (this.options.mode === 'war' && Object.keys(this.gs.players).length >= 2) {
-            this._startGame();
+        // Send team codes if squad
+        if (this.options.mode === 'squad') {
+            client.send('red_room_code', { code: this.redCode });
+            client.send('blue_room_code', { code: this.blueCode });
         }
+
+        // Broadcast updated lobby/state
+        this._broadcastLobbyState();
+        this._broadcastState();
+        this._checkStart();
 
         console.log(`[MazeRoom] ${opts.name} joined (${team})`);
     }
@@ -133,11 +144,79 @@ class MazeRoom extends colyseus.Room {
     onLeave(client) {
         delete this.gs.players[client.sessionId];
         this.broadcast('player_left', client.sessionId);
-        if (Object.keys(this.gs.players).length === 0) this.disconnect();
+        this._broadcastLobbyState();
+        this._checkStart(); // Check if we need to cancel countdown
+        
+        if (Object.keys(this.gs.players).length === 0) {
+            this.disconnect();
+        }
     }
 
     onDispose() {
         console.log('[MazeRoom] disposed');
+    }
+
+    _broadcastLobbyState() {
+        if (this.gs.phase !== 'waiting') return;
+        const list = Object.values(this.gs.players).map(p => ({
+            sessionId: p.sessionId,
+            name: p.name,
+            team: p.team
+        }));
+        this.broadcast('lobby_players', list);
+    }
+
+    _checkStart() {
+        if (this.gs.phase !== 'waiting') return;
+        
+        const all = Object.values(this.gs.players);
+        let readyToStart = false;
+        let countdownTime = 10;
+        
+        if (this.options.mode === 'duel' && all.length === 2) {
+            readyToStart = true;
+            countdownTime = 5;
+        }
+        if (this.options.mode === 'war' && all.length >= 2) {
+            readyToStart = true;
+            countdownTime = 10;
+        }
+        if (this.options.mode === 'squad') {
+            const red = all.filter(p => p.team === 'red').length;
+            const blue = all.filter(p => p.team === 'blue').length;
+            if (red > 0 && blue > 0) readyToStart = true;
+            countdownTime = 10;
+        }
+
+        if (readyToStart && !this.countdownTimer) {
+            this.countdownSeconds = countdownTime;
+            this.broadcast('countdown', { seconds: this.countdownSeconds });
+            this.countdownTimer = this.clock.setInterval(() => {
+                this.countdownSeconds--;
+                if (this.countdownSeconds <= 0) {
+                    this.countdownTimer.clear();
+                    this.countdownTimer = null;
+                    this._startGame();
+                } else {
+                    this.broadcast('countdown', { seconds: this.countdownSeconds });
+                }
+            }, 1000);
+        } else if (!readyToStart && this.countdownTimer) {
+            this.countdownTimer.clear();
+            this.countdownTimer = null;
+            this.broadcast('countdown', { seconds: null });
+        }
+    }
+
+    _startGame() {
+        if (this.gs.phase !== 'waiting') return;
+        this.gs.phase = 'playing';
+        this.broadcast('game_started', {
+            seed: this.gs.seed,
+            mode: this.gs.mode,
+            players: Object.values(this.gs.players),
+        });
+        console.log(`[MazeRoom] STARTED — mode:${this.gs.mode} players:${Object.keys(this.gs.players).length}`);
     }
 
     // ══════════════════════
@@ -173,7 +252,7 @@ class MazeRoom extends colyseus.Room {
         // Monster AI
         this.monsterAI.update(TICK_MS, this.gs.players);
 
-        // Broadcast compact state diff (position + health only for perf)
+        // Broadcast compact state diff
         this._broadcastCompact();
     }
 
@@ -290,29 +369,12 @@ class MazeRoom extends colyseus.Room {
         this.clock.setTimeout(() => this.disconnect(), 5000);
     }
 
-    _checkStart() {
-        if (this.options.mode === 'war') return;
-        const all = Object.values(this.gs.players);
-        if (all.length >= 2 && all.every(p => p.ready)) this._startGame();
-    }
-
-    _startGame() {
-        if (this.gs.phase !== 'waiting') return;
-        this.gs.phase = 'playing';
-        this.broadcast('game_started', {
-            seed: this.gs.seed,
-            mode: this.gs.mode,
-            players: Object.values(this.gs.players),
-        });
-        console.log(`[MazeRoom] STARTED — mode:${this.gs.mode} players:${Object.keys(this.gs.players).length}`);
-    }
-
-    // Broadcast full state to all clients
+    // Broadcast full state
     _broadcastState() {
         this.broadcast('state_full', this.gs);
     }
 
-    // Broadcast only positions + health (compact, 20 Hz)
+    // Broadcast compact positions + health
     _broadcastCompact() {
         this.broadcast('state_tick', {
             tick: this.gs.tick,

@@ -37,7 +37,7 @@ class NetworkManager {
      */
     async joinOrCreate(
         roomType: 'duel' | 'squad' | 'war',
-        options: { uid: string; name: string; roomCode?: string }
+        options: { uid: string; name: string; roomCode?: string; reqTeam?: string }
     ): Promise<Room> {
         if (!this.client) this.connect();
 
