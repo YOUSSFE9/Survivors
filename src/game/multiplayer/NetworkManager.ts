@@ -10,7 +10,7 @@
  */
 import { Client, Room } from 'colyseus.js';
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'ws://localhost:2567';
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:2567';
 
 class NetworkManager {
     private client: Client | null = null;

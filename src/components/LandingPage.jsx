@@ -15,6 +15,7 @@ export default function LandingPage({ onStartGame }) {
     const [stars, setStars] = useState([]);
     const [showLobby, setShowLobby] = useState(false);
     const [lang, setLang] = useState(getSavedLang());
+    const [status, setStatus] = useState('');
 
     const t = T[lang] || T['ar'];
 
@@ -67,6 +68,11 @@ export default function LandingPage({ onStartGame }) {
     };
 
     const handlePlayOnline = () => {
+        if (!user) {
+            setStatus('⚠️ يجب تسجيل الدخول بحساب Google للعب أونلاين');
+            setTimeout(() => setStatus(''), 4000);
+            return;
+        }
         enterGameFullscreen();
         setShowLobby(true);
     };
@@ -195,13 +201,15 @@ export default function LandingPage({ onStartGame }) {
 
                 {/* Status */}
                 <div className="status-bar">
-                    {user ? (
+                    {status ? (
+                        <p className="status-text" style={{ color: '#ffaa33' }}>{status}</p>
+                    ) : user ? (
                         <p className="status-text connected">
                             <span className="status-dot" /> Connected as <strong>{user.displayName || 'Survivor'}</strong>
                         </p>
                     ) : (
                         <p className="status-text">
-                            {firebaseEnabled ? 'Sign in with Google to save your progress' : 'Offline mode only'}
+                            {firebaseEnabled ? 'Sign in with Google to play online' : 'Offline mode only'}
                         </p>
                     )}
                 </div>
