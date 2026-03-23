@@ -25,6 +25,7 @@ export class GameScene extends Phaser.Scene {
         this.onlineRoomId = this.game.registry.get('roomId')   || null;
         this.onlineUid    = this.game.registry.get('uid')        || null;
         this.onlineName   = this.game.registry.get('name')       || 'Player';
+        this.onlineSeed   = this.game.registry.get('mazeSeed')   || null; // shared seed from server
     }
 
     create() {
@@ -33,9 +34,16 @@ export class GameScene extends Phaser.Scene {
         this.pickups = [];
         this.killCount = 0;
 
-        // Generate maze
-        const mazeGen = new MazeGenerator(20, 20, 3);
-        this.mazeData = mazeGen.generate();
+        // Generate maze — use server algorithm+seed for online, original for offline
+        const mazeSeed = this.onlineSeed || null;
+        if (mazeSeed) {
+            // Online: use same algorithm as server for identical maze
+            this.mazeData = MazeGenerator.generateOnline(20, 20, 3, mazeSeed);
+        } else {
+            // Offline: use full recursive backtracker with rooms
+            const mazeGen = new MazeGenerator(20, 20, 3);
+            this.mazeData = mazeGen.generate();
+        }
 
         const worldW = this.mazeData.width  * this.tileSize;
         const worldH = this.mazeData.height * this.tileSize;
@@ -96,9 +104,11 @@ export class GameScene extends Phaser.Scene {
         this._spawnWormholes();
         this.time.addEvent({ delay: 60000, loop: true, callback: () => this._spawnWormholes() });
 
-        // Spawn 20 Bot Players after 2s (to let the maze tile physics settle)
+        // Spawn bots only in offline mode
         this.bots = [];
-        this.time.delayedCall(2000, () => this._spawnBots());
+        if (!this.onlineMode) {
+            this.time.delayedCall(2000, () => this._spawnBots());
+        }
 
         // Online mode: skip bots/waves, connect to Colyseus instead
         if (this.onlineMode) {
@@ -222,11 +232,19 @@ export class GameScene extends Phaser.Scene {
             const { OnlineSync: OSync } = mod;
             this.onlineSync = new OSync(this);
 
-            await this.onlineSync.joinRoom(this.onlineMode, {
-                uid: this.onlineUid || 'anon',
-                name: this.onlineName || 'Player',
-                roomCode: this.onlineRoomId,
-            });
+            // REUSE the existing room from OnlineLobby (stored on network singleton)
+            const { network: netMgr } = await import('../multiplayer/NetworkManager');
+            if (netMgr.room) {
+                this.onlineSync.attachRoom(netMgr.room);
+                console.log('[GameScene] Attached to existing room:', netMgr.room.id);
+            } else {
+                // Fallback: join fresh (shouldn't normally happen)
+                await this.onlineSync.joinRoom(this.onlineMode, {
+                    uid: this.onlineUid || 'anon',
+                    name: this.onlineName || 'Player',
+                    roomCode: this.onlineRoomId,
+                });
+            }
 
             // Handle game over from server
             this.onlineSync.onGameOver = ({ winner, killerName, mode: m }) => {

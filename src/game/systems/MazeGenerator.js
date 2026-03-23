@@ -16,7 +16,7 @@ const TILE = {
 export { TILE };
 
 export class MazeGenerator {
-    constructor(cols = 30, rows = 30, cellSize = 3) {
+    constructor(cols = 30, rows = 30, cellSize = 3, seed = null) {
         this.cols = cols;
         this.rows = rows;
         this.cellSize = cellSize;
@@ -29,7 +29,20 @@ export class MazeGenerator {
         this.trapPositions = [];
         this.playerSpawn = { x: 0, y: 0 };
         this.rooms = [];
+
+        // Seeded PRNG (mulberry32) — if no seed provided, use Date.now()
+        this._seed = seed ?? Date.now();
+        let s = this._seed | 0;
+        this._rng = () => {
+            s |= 0; s = s + 0x6D2B79F5 | 0;
+            let t = Math.imul(s ^ s >>> 15, 1 | s);
+            t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+            return ((t ^ t >>> 14) >>> 0) / 4294967296;
+        };
     }
+
+    // Use this instead of Math.random()
+    random() { return this._rng(); }
 
     generate() {
         // Initialize all as walls
@@ -59,7 +72,7 @@ export class MazeGenerator {
             if (neighbors.length === 0) {
                 stack.pop();
             } else {
-                const next = neighbors[Math.floor(Math.random() * neighbors.length)];
+                const next = neighbors[Math.floor(this.random() * neighbors.length)];
                 visited[next.y][next.x] = true;
                 this._carvePassage(current.x, current.y, next.x, next.y);
                 this._carveCell(next.x, next.y);
@@ -152,10 +165,10 @@ export class MazeGenerator {
 
     _createRooms(count) {
         for (let i = 0; i < count; i++) {
-            const roomW = 4 + Math.floor(Math.random() * 4);
-            const roomH = 4 + Math.floor(Math.random() * 4);
-            const rx = 2 + Math.floor(Math.random() * (this.mapWidth - roomW - 4));
-            const ry = 2 + Math.floor(Math.random() * (this.mapHeight - roomH - 4));
+            const roomW = 4 + Math.floor(this.random() * 4);
+            const roomH = 4 + Math.floor(this.random() * 4);
+            const rx = 2 + Math.floor(this.random() * (this.mapWidth - roomW - 4));
+            const ry = 2 + Math.floor(this.random() * (this.mapHeight - roomH - 4));
 
             for (let y = ry; y < ry + roomH && y < this.mapHeight; y++) {
                 for (let x = rx; x < rx + roomW && x < this.mapWidth; x++) {
@@ -178,7 +191,7 @@ export class MazeGenerator {
 
         // Shuffle floors
         for (let i = floors.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
+            const j = Math.floor(this.random() * (i + 1));
             [floors[i], floors[j]] = [floors[j], floors[i]];
         }
 
@@ -233,6 +246,66 @@ export class MazeGenerator {
 
     getRandomFloor() {
         const floors = this.getFloorTiles();
-        return floors[Math.floor(Math.random() * floors.length)];
+        return floors[Math.floor(this.random() * floors.length)];
+    }
+
+    /**
+     * Generate maze using SAME algorithm as server — must produce identical grid.
+     * Uses LCG PRNG + step-2 carve, matching server/src/logic/MazeGenerator.js
+     */
+    static generateOnline(w, h, scale, seed) {
+        const width  = w * scale;
+        const height = h * scale;
+        const tileSize = 32;
+        const grid = Array.from({ length: height }, () => new Array(width).fill(1));
+
+        // Same LCG as server
+        let s = seed >>> 0;
+        const rng = () => {
+            s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+            return s / 0xffffffff;
+        };
+
+        const carved = new Set();
+        const key = (x, y) => `${x}_${y}`;
+
+        function carve(cx, cy) {
+            grid[cy][cx] = 0;
+            carved.add(key(cx, cy));
+            const dirs = [[0,-2],[2,0],[0,2],[-2,0]].sort(() => rng() - 0.5);
+            for (const [dx, dy] of dirs) {
+                const nx = cx + dx, ny = cy + dy;
+                if (nx > 0 && ny > 0 && nx < width-1 && ny < height-1 && !carved.has(key(nx,ny))) {
+                    grid[cy + dy/2][cx + dx/2] = 0;
+                    carve(nx, ny);
+                }
+            }
+        }
+        carve(1, 1);
+
+        // Generate spawn/key/pickup/enemy/trap positions from floor tiles
+        const floors = [];
+        for (let y = 0; y < height; y++)
+            for (let x = 0; x < width; x++)
+                if (grid[y][x] === 0) floors.push({ x, y });
+
+        // Shuffle with same rng
+        for (let i = floors.length - 1; i > 0; i--) {
+            const j = Math.floor(rng() * (i + 1));
+            [floors[i], floors[j]] = [floors[j], floors[i]];
+        }
+
+        let idx = 0;
+        const playerSpawn = floors[idx++] || { x: 1, y: 1 };
+        const keyPositions = [];
+        for (let i = 0; i < 10 && idx < floors.length; i++) keyPositions.push(floors[idx++]);
+        const pickupPositions = [];
+        for (let i = 0; i < 15 && idx < floors.length; i++) pickupPositions.push(floors[idx++]);
+        const enemyPositions = [];
+        for (let i = 0; i < 20 && idx < floors.length; i++) enemyPositions.push(floors[idx++]);
+        const trapPositions = [];
+        for (let i = 0; i < 20 && idx < floors.length; i++) trapPositions.push(floors[idx++]);
+
+        return { grid, width, height, playerSpawn, keyPositions, pickupPositions, enemyPositions, trapPositions, rooms: [] };
     }
 }

@@ -24,7 +24,7 @@ interface Props {
     uid: string;
     playerName: string;
     avatarUrl?: string;
-    onMatchFound: (info: { mode: string; roomId: string }) => void;
+    onMatchFound: (info: { mode: string; roomId: string; mazeSeed?: number }) => void;
     onBack: () => void;
 }
 
@@ -96,10 +96,10 @@ export default function OnlineLobby({ uid, playerName, avatarUrl = '', onBack, o
         });
 
         // Game started → close preview, navigate
-        room.onMessage('game_started', () => {
+        room.onMessage('game_started', (data: any) => {
             if (searchTimerRef.current) { clearInterval(searchTimerRef.current); searchTimerRef.current = null; }
             setPreview(null);
-            onMatchFound({ mode: m, roomId: room.id });
+            onMatchFound({ mode: m, roomId: room.id, mazeSeed: data?.seed || 0 });
         });
 
         // Online game over — no retry

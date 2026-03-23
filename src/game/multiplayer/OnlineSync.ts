@@ -33,6 +33,13 @@ export class OnlineSync {
         return this.room;
     }
 
+    /** Attach an already-joined room (from OnlineLobby) instead of joining a new one */
+    attachRoom(room) {
+        this.room = room;
+        this.mySessionId = room.sessionId;
+        this._registerHandlers();
+    }
+
     // ══════════════════════════
     //  SERVER → CLIENT handlers
     // ══════════════════════════
