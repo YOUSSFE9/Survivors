@@ -17,8 +17,16 @@ const { LobbyRoom } = require('./rooms/LobbyRoom');
 
 const PORT = process.env.PORT || 2567;
 
+const corsOptions = {
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+    credentials: false,
+};
+
 const app = express();
-app.use(cors());
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions)); // Pre-flight for all routes
 app.use(express.json());
 
 app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now() }));
