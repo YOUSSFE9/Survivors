@@ -87,6 +87,7 @@ export default function LandingPage({ onStartGame }) {
             <OnlineLobby
                 uid={user?.uid || `guest_${Date.now()}`}
                 playerName={user?.displayName || `Player_${Math.floor(Math.random() * 9999)}`}
+                avatarUrl={user?.photoURL || ''}
                 onMatchFound={({ mode, roomId }) => onStartGame('online', { onlineMode: mode, roomId })}
                 onBack={() => setShowLobby(false)}
             />

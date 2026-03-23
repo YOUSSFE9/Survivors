@@ -30,12 +30,11 @@ class NetworkManager {
      */
     async joinOrCreate(
         roomType: 'duel' | 'squad' | 'war',
-        options: { uid: string; name: string; roomCode?: string; reqTeam?: string }
+        options: { uid: string; name: string; avatarUrl?: string; roomCode?: string; reqTeam?: string }
     ): Promise<Room> {
         if (!this.client) this.connect();
 
         if (options.roomCode) {
-            // Join by room code (works for both duel friend and squad)
             this.room = await this.client!.joinById(options.roomCode, options);
         } else {
             this.room = await this.client!.joinOrCreate(roomType, options);
@@ -47,15 +46,15 @@ class NetworkManager {
     }
 
     /**
-     * Create a private room for any mode (duel or squad).
-     * Returns the room + roomId for sharing as invite code.
+     * Create a private room (friend challenge).
+     * isPrivate:true tells server to NEVER spawn bots — only real players can start it.
      */
     async createPrivateRoom(
         roomType: 'duel' | 'squad',
-        options: { uid: string; name: string; reqTeam?: string }
+        options: { uid: string; name: string; avatarUrl?: string; reqTeam?: string }
     ): Promise<{ room: Room; roomId: string }> {
         if (!this.client) this.connect();
-        const room = await this.client!.create(roomType, options);
+        const room = await this.client!.create(roomType, { ...options, isPrivate: true });
         this.room = room;
         this.sessionId = room.sessionId;
         const roomId = (room as any).id as string;
