@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-    auth, firebaseEnabled, googleProvider, savePlayerProfile,
-    onAuthStateChanged, signInWithPopup, signOut, signInAnonymously
+    auth, firebaseEnabled, savePlayerProfile,
+    onAuthStateChanged, signInWithGoogle, handleAuthRedirect, signOut
 } from '../firebase/config';
 import { enterGameFullscreen } from '../utils/mobileUtils';
 import OnlineLobby from './OnlineLobby';
@@ -11,7 +11,7 @@ import './LandingPage.css';
 
 export default function LandingPage({ onStartGame }) {
     const [user, setUser] = useState(null);
-    const [loading, setLoading] = useState(false);
+    const [loading, setLoading] = useState(true); // start true to handle redirect
     const [stars, setStars] = useState([]);
     const [showLobby, setShowLobby] = useState(false);
     const [lang, setLang] = useState(getSavedLang());
@@ -36,9 +36,14 @@ export default function LandingPage({ onStartGame }) {
         setStars(s);
     }, []);
 
-    // Watch auth state
+    // Handle mobile redirect result + watch auth state
     useEffect(() => {
-        if (!firebaseEnabled || !auth) return;
+        if (!firebaseEnabled || !auth) {
+            setLoading(false);
+            return;
+        }
+        // Handle redirect result first (mobile Google auth)
+        handleAuthRedirect().finally(() => setLoading(false));
         const unsub = onAuthStateChanged(auth, async (u) => {
             setUser(u);
             if (u) await savePlayerProfile(u);
@@ -50,9 +55,9 @@ export default function LandingPage({ onStartGame }) {
         if (!firebaseEnabled || !auth) return;
         setLoading(true);
         try {
-            await signInWithPopup(auth, googleProvider);
+            await signInWithGoogle(); // auto popup/redirect by device
         } catch (e) {
-            console.error('Google sign-in failed:', e);
+            console.error('Sign-in failed:', e);
         }
         setLoading(false);
     }, []);
