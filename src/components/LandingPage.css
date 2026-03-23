@@ -156,6 +156,89 @@
   text-transform: uppercase;
 }
 
+/* Auth Section */
+.auth-section {
+  margin-bottom: 20px;
+}
+
+.btn-google {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 20px;
+  background: #fff;
+  color: #1a1a1a;
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+  font-family: 'Outfit', sans-serif;
+  font-size: 0.9rem;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  transition: all 0.25s ease;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+}
+
+.btn-google:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(0,0,0,0.4);
+}
+
+.btn-google:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.user-profile {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 12px;
+  padding: 10px 16px;
+}
+
+.user-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 2px solid rgba(68,255,170,0.4);
+}
+
+.user-info {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.user-name {
+  font-size: 0.85rem;
+  color: #cde;
+  font-weight: 600;
+}
+
+.btn-signout {
+  font-size: 0.7rem;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: rgba(255,60,60,0.15);
+  border: 1px solid rgba(255,60,60,0.25);
+  color: #ff8888;
+  cursor: pointer;
+  font-family: 'Outfit', sans-serif;
+  transition: all 0.2s;
+}
+
+.btn-signout:hover {
+  background: rgba(255,60,60,0.28);
+}
+
 /* Buttons */
 .button-group {
   display: flex;
