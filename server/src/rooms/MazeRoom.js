@@ -1,41 +1,52 @@
 /**
  * MazeRoom — Core game room. Plain JavaScript, Colyseus 0.15.
- * Server-authoritative: collision, damage, keys, monsters, bots.
- * 3 modes: duel (1v1), squad (4v4 teams), war (20 FFA).
+ * Modes: duel (1v1), squad (4v4 teams), war (20 FFA).
+ *
+ * Bot philosophy: Bots have REALISTIC names so players can't tell them apart.
+ * No [BOT] prefix, no special indicator — they should feel like real players.
  */
 const colyseus = require('colyseus');
 const { MonsterAI } = require('../logic/MonsterAI');
 const { MazeGenerator } = require('../logic/MazeGenerator');
 
-const TICK_MS = 50;       // 20 Hz
-const PLAYER_SPEED = 9;   // px per tick
-const BULLET_SPEED = 20;
-const BULLET_TTL_TICKS = 40;
+const TICK_MS   = 50;     // 20 Hz
+const PLAYER_SPEED = 9;
+const BULLET_SPEED = 18;
+const BULLET_TTL   = 40;
 
 const TINTS = [
     0xff3333, 0x33ff88, 0x3388ff, 0xffdd33, 0xff33ff,
     0x33ffdd, 0xff8833, 0x88ff33, 0xdd33ff, 0x33ccff,
-    0xff5533, 0x55ff88, 0xddbb33, 0x5588ff, 0xff55aa
 ];
 
-const BOT_NAMES = [
-    'Shadow_Ghost','Dark_Viper','NeonKiller','IronWolf','StealthX',
-    'BloodMoon','QuantumZ','DeathShot','CyberFox','PhantomX',
-    'DarkReaper','VoidHunter','SteelFang','NightBlaze','GhostByte',
-    'SkullCrush','IronGhost','RedDagger','NeonShadow','DeathStrike'
+// Realistic player-like names (no [BOT] hint)
+const REALISTIC_NAMES = [
+    'ShadowX', 'NightWolf', 'DarkBlade', 'GhostFire', 'IronFang',
+    'ViperX', 'StormRider', 'BlackMoon', 'RedPhantom', 'SteelClaw',
+    'CyberX', 'DeathWing', 'CrimsonFox', 'VoidWalker', 'BladeEdge',
+    'NeonStrike', 'QuantumAce', 'DarkMatter', 'SilentBlade', 'FuryX',
+    'ShadowByte', 'LightFang', 'ColdBlood', 'HexRunner', 'ZeroX',
 ];
+
+// Adds randomness so the same name doesn't appear every time
+function randomBotName(seed) {
+    const base = REALISTIC_NAMES[seed % REALISTIC_NAMES.length];
+    const suffix = Math.floor(Math.random() * 900) + 100;
+    return `${base}${suffix}`;
+}
 
 class MazeRoom extends colyseus.Room {
+
     onCreate(options) {
-        this.options = options;
+        this.options  = options;
         this.maxClients = options.maxPlayers || 20;
 
         const seed = Math.floor(Math.random() * 999999);
         const mazeData = MazeGenerator.generate(20, 20, 3, seed);
 
-        // Squad Team Codes
+        // Squad team codes
         if (options.mode === 'squad') {
-            this.redCode = this.roomId + '-R';
+            this.redCode  = this.roomId + '-R';
             this.blueCode = this.roomId + '-B';
         }
 
@@ -50,55 +61,45 @@ class MazeRoom extends colyseus.Room {
             bullets: [],
         };
 
-        this.monsterAI = new MonsterAI(mazeData, this.gs);
-        this.monsterAI.spawnWave(5);
-
+        this.monsterAI    = new MonsterAI(mazeData, this.gs);
         this.playerInputs = {};
         this.bulletCounter = 0;
-        this.botCounter = 0;
+        this.botCounter    = 0;
         this._portalSpawned = false;
-
-        this.hostSessionId = null;
+        this.hostSessionId  = null;
         this.countdownTimer = null;
-        this.countdownSeconds = 0;
-        this._botFillTimer = null;
-        this._duelBotTimer = null;
+        this._botFillTimer  = null;
+        this._warFilling    = false;
 
-        // ── Message Handlers ──
-        this.onMessage('input', (client, msg) => {
-            if (this.gs.phase === 'playing') this.playerInputs[client.sessionId] = msg;
+        // ── Monster wave every 10 s ──
+        this.clock.setInterval(() => {
+            if (this.gs.phase !== 'playing') return;
+            const alive = Object.values(this.gs.monsters).filter(m => m.alive).length;
+            const cap   = Math.min(20, 5 + Object.keys(this.gs.players).length * 2);
+            if (alive < cap) this.monsterAI.spawnWave(Math.min(5, cap - alive));
+        }, 10000);
+
+        // ── Message handlers ──
+        this.onMessage('input',       (c, m) => { if (this.gs.phase === 'playing') this.playerInputs[c.sessionId] = m; });
+        this.onMessage('shoot',       (c, m) => this._spawnBullet(c.sessionId, m));
+        this.onMessage('pickup_key',  (c, m) => this._handlePickup(c.sessionId, m.keyId));
+        this.onMessage('enter_portal',(c)     => this._handlePortal(c.sessionId));
+
+        this.onMessage('host_start', (c) => {
+            if (c.sessionId !== this.hostSessionId) return;
+            if (options.mode === 'war') this._startWarFill();
+            else this._triggerCountdown();
         });
 
-        this.onMessage('shoot', (client, msg) => {
-            this._spawnBullet(client.sessionId, msg);
+        this.onMessage('kick_player', (c, { targetId }) => {
+            if (c.sessionId !== this.hostSessionId) return;
+            const t = this.clients.find(x => x.sessionId === targetId);
+            if (t) t.leave(4000, 'kicked');
+            else { delete this.gs.players[targetId]; this._broadcastLobbyState(); }
         });
 
-        this.onMessage('pickup_key', (client, msg) => {
-            this._handlePickup(client.sessionId, msg.keyId);
-        });
-
-        this.onMessage('enter_portal', (client) => {
-            this._handlePortal(client.sessionId);
-        });
-
-        // Host controls
-        this.onMessage('host_start', (client) => {
-            if (client.sessionId !== this.hostSessionId) return;
-            if (this.options.mode === 'war') {
-                this._startWarFill();
-            } else {
-                this._triggerCountdown();
-            }
-        });
-
-        this.onMessage('kick_player', (client, { targetId }) => {
-            if (client.sessionId !== this.hostSessionId) return;
-            const target = this.clients.find(c => c.sessionId === targetId);
-            if (target) target.leave(4000, 'kicked');
-        });
-
-        this.onMessage('move_team', (client, { targetId }) => {
-            if (client.sessionId !== this.hostSessionId) return;
+        this.onMessage('move_team', (c, { targetId }) => {
+            if (c.sessionId !== this.hostSessionId) return;
             const p = this.gs.players[targetId];
             if (!p) return;
             p.team = p.team === 'red' ? 'blue' : 'red';
@@ -107,46 +108,30 @@ class MazeRoom extends colyseus.Room {
         });
 
         // Game tick
-        this.tickTimer = this.clock.setInterval(() => this._tick(), TICK_MS);
+        this.clock.setInterval(() => this._tick(), TICK_MS);
 
-        // Monster wave every 10s
-        this.clock.setInterval(() => {
-            if (this.gs.phase !== 'playing') return;
-            const alive = Object.values(this.gs.monsters).filter(m => m.alive).length;
-            const cap = Math.min(20, 5 + Object.keys(this.gs.players).length * 2);
-            if (alive < cap) this.monsterAI.spawnWave(Math.min(5, cap - alive));
-        }, 10000);
-
-        console.log(`[MazeRoom] created — mode:${options.mode} maxPlayers:${this.maxClients}`);
+        console.log(`[MazeRoom:${this.roomId}] created — mode:${options.mode}`);
     }
 
     onJoin(client, opts = {}) {
-        const playerCount = Object.keys(this.gs.players).length;
+        const count = Object.keys(this.gs.players).length;
+        if (!this.hostSessionId) this.hostSessionId = client.sessionId;
 
-        if (!this.hostSessionId) {
-            this.hostSessionId = client.sessionId;
-        }
-
+        // Team assignment
         let team = 'none';
-        let tint = TINTS[playerCount % TINTS.length];
-
+        let tint  = TINTS[count % TINTS.length];
         if (this.options.teams) {
-            if (opts.reqTeam === 'red' || opts.reqTeam === 'blue' || opts.team === 'red' || opts.team === 'blue') {
-                team = opts.reqTeam || opts.team;
-            } else {
-                const red  = Object.values(this.gs.players).filter(p => p.team === 'red').length;
-                const blue = Object.values(this.gs.players).filter(p => p.team === 'blue').length;
-                team = red <= blue ? 'red' : 'blue';
-            }
+            team = opts.reqTeam || opts.team ||
+                (Object.values(this.gs.players).filter(p=>p.team==='red').length <=
+                 Object.values(this.gs.players).filter(p=>p.team==='blue').length ? 'red' : 'blue');
             tint = team === 'red' ? 0xff4444 : 0x4488ff;
         }
 
         const spawn = this.monsterAI.getSpawnPos();
-
         this.gs.players[client.sessionId] = {
             sessionId: client.sessionId,
-            uid: opts.uid || client.sessionId,
-            name: opts.name || BOT_NAMES[playerCount % BOT_NAMES.length],
+            uid:   opts.uid  || client.sessionId,
+            name:  opts.name || 'Player',
             team, tint,
             x: spawn.x, y: spawn.y, rotation: 0,
             health: 100, maxHealth: 100,
@@ -154,41 +139,46 @@ class MazeRoom extends colyseus.Room {
             weapon: '', isBot: false,
         };
 
-        if (this.options.mode === 'squad') {
-            client.send('red_room_code', { code: this.redCode });
-            client.send('blue_room_code', { code: this.blueCode });
-        }
-
+        // Notify client of their host status
         client.send('host_status', { isHost: client.sessionId === this.hostSessionId });
 
-        this._broadcastLobbyState();
-        this._broadcastState();
+        // Squad codes
+        if (this.options.mode === 'squad') {
+            client.send('squad_codes', { redCode: this.redCode, blueCode: this.blueCode });
+        }
 
-        // Duel mode: if 2 real players → start countdown, else start 30s bot timer
+        this._broadcastLobbyState();
+
+        const realCount = this._realPlayerCount();
+
+        // ── DUEL logic ──
         if (this.options.mode === 'duel') {
-            const realPlayers = Object.values(this.gs.players).filter(p => !p.isBot);
-            if (realPlayers.length >= 2) {
-                if (this._duelBotTimer) { this._duelBotTimer.clear(); this._duelBotTimer = null; }
+            if (realCount >= 2) {
+                // Two real players — start immediately (private room) or after countdown
+                if (this._botFillTimer) { this._botFillTimer.clear(); this._botFillTimer = null; }
                 this._triggerCountdown();
-            } else if (!this._duelBotTimer) {
-                this._duelBotTimer = this.clock.setTimeout(() => {
-                    const real = Object.values(this.gs.players).filter(p => !p.isBot);
-                    if (real.length < 2) {
-                        this._spawnBot('none');
+            } else if (!this._botFillTimer) {
+                // Start 15-second bot timer (looks like matchmaking time)
+                this._botFillTimer = this.clock.setTimeout(() => {
+                    if (this._realPlayerCount() < 2) {
+                        this._spawnRealisticBot('none', /* silent = */ true);
                         this._triggerCountdown();
                     }
-                }, 30000);
+                }, 15000);
             }
         }
 
-        // War mode: auto-start fill after 30s
+        // ── WAR logic — start fill timer after 30s ──
         if (this.options.mode === 'war' && !this._botFillTimer) {
             this._botFillTimer = this.clock.setTimeout(() => {
                 this._startWarFill();
             }, 30000);
         }
 
-        console.log(`[MazeRoom] ${opts.name} joined (${team}) — total: ${Object.keys(this.gs.players).length}`);
+        // Initial monsters in DUEL and SQUAD
+        if (this.options.mode !== 'war' && count === 0) {
+            this.monsterAI.spawnWave(5);
+        }
     }
 
     onLeave(client) {
@@ -197,50 +187,52 @@ class MazeRoom extends colyseus.Room {
         this.broadcast('player_left', client.sessionId);
 
         if (wasHost) {
-            // Pass host to next real player
-            const remaining = Object.values(this.gs.players).filter(p => !p.isBot);
-            this.hostSessionId = remaining.length > 0 ? remaining[0].sessionId : null;
+            const next = Object.values(this.gs.players).find(p => !p.isBot);
+            this.hostSessionId = next ? next.sessionId : null;
             if (this.hostSessionId) {
-                const newHost = this.clients.find(c => c.sessionId === this.hostSessionId);
-                if (newHost) newHost.send('host_status', { isHost: true });
+                const nc = this.clients.find(c => c.sessionId === this.hostSessionId);
+                if (nc) nc.send('host_status', { isHost: true });
             }
             this.broadcast('new_host', { hostId: this.hostSessionId });
         }
 
         this._broadcastLobbyState();
-        const realPlayers = Object.values(this.gs.players).filter(p => !p.isBot);
-        if (realPlayers.length === 0) this.disconnect();
+        if (this._realPlayerCount() === 0) this.disconnect();
     }
 
     onDispose() {
-        console.log('[MazeRoom] disposed');
+        console.log(`[MazeRoom:${this.roomId}] disposed`);
     }
 
-    // ── Bot System ──
+    // ───────────────────────────────────────
+    // Bot helpers
+    // ───────────────────────────────────────
 
-    _spawnBot(team = 'none') {
-        const botId = `bot_${this.botCounter++}`;
+    _realPlayerCount() {
+        return Object.values(this.gs.players).filter(p => !p.isBot).length;
+    }
+
+    _spawnRealisticBot(team = 'none', silent = false) {
+        const idx   = this.botCounter++;
+        const botId = `bot_${idx}_${Date.now()}`;
+        const name  = randomBotName(idx);
         const spawn = this.monsterAI.getSpawnPos();
-        const name = '[BOT] ' + BOT_NAMES[this.botCounter % BOT_NAMES.length];
 
-        let tint = TINTS[this.botCounter % TINTS.length];
+        let tint = TINTS[idx % TINTS.length];
         if (team === 'red') tint = 0xff4444;
         if (team === 'blue') tint = 0x4488ff;
 
         this.gs.players[botId] = {
             sessionId: botId,
-            uid: botId,
-            name, team, tint,
+            uid: botId, name, team, tint,
             x: spawn.x, y: spawn.y, rotation: 0,
             health: 100, maxHealth: 100,
             alive: true, keys: 0, kills: 0,
             weapon: '', isBot: true,
-            _shootCooldown: 0,
+            _shootCooldown: Math.floor(Math.random() * 20),
         };
 
-        this._broadcastLobbyState();
-        this._broadcastState();
-        console.log(`[MazeRoom] Bot spawned: ${name} (${team})`);
+        if (!silent) this._broadcastLobbyState();
         return botId;
     }
 
@@ -248,58 +240,64 @@ class MazeRoom extends colyseus.Room {
         for (const [sid, p] of Object.entries(this.gs.players)) {
             if (!p.isBot || !p.alive) continue;
 
-            // Find nearest non-bot player
-            let nearest = null, nearestDist = Infinity;
+            // Find nearest enemy
+            let nearest = null, bestDist = Infinity;
             for (const [oid, op] of Object.entries(this.gs.players)) {
-                if (oid === sid || !op.alive || op.isBot) continue;
+                if (oid === sid || !op.alive) continue;
                 if (this.options.teams && op.team === p.team) continue;
                 const dx = op.x - p.x, dy = op.y - p.y;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                if (dist < nearestDist) { nearestDist = dist; nearest = op; }
+                const d = Math.sqrt(dx*dx + dy*dy);
+                if (d < bestDist) { bestDist = d; nearest = op; }
             }
 
             if (!nearest) continue;
-
             const dx = nearest.x - p.x, dy = nearest.y - p.y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
+            const dist = Math.sqrt(dx*dx + dy*dy);
 
-            // Move toward player (stop at 80px)
+            // Move toward player (jitter to look human)
             if (dist > 80) {
-                p.x += (dx / dist) * (PLAYER_SPEED * 0.8);
-                p.y += (dy / dist) * (PLAYER_SPEED * 0.8);
+                const jitter = (Math.random() - 0.5) * 2;
+                p.x += ((dx / dist) + jitter * 0.15) * (PLAYER_SPEED * 0.85);
+                p.y += ((dy / dist) + jitter * 0.15) * (PLAYER_SPEED * 0.85);
             }
 
             p.rotation = Math.atan2(dy, dx);
-            p.x = Math.max(0, Math.min(p.x, this.monsterAI.worldW));
-            p.y = Math.max(0, Math.min(p.y, this.monsterAI.worldH));
+            p.x = Math.max(16, Math.min(p.x, (this.monsterAI.worldW || 2000) - 16));
+            p.y = Math.max(16, Math.min(p.y, (this.monsterAI.worldH || 2000) - 16));
 
-            // Shoot at player (every ~1.5s = 30 ticks)
+            // Shoot with human-like cooldown variance
             p._shootCooldown = (p._shootCooldown || 0) - 1;
-            if (p._shootCooldown <= 0 && dist < 350) {
+            if (p._shootCooldown <= 0 && dist < 380) {
+                // Add a small aim variance
+                const aimNoise = (Math.random() - 0.5) * 0.3;
                 this._spawnBullet(sid, {
-                    vx: (dx / dist) * 400,
-                    vy: (dy / dist) * 400,
-                    damage: 12,
+                    vx: (dx / dist + aimNoise) * 400,
+                    vy: (dy / dist + aimNoise) * 400,
+                    damage: 10 + Math.floor(Math.random() * 6),
                     isExplosive: false,
                 });
-                p._shootCooldown = 25 + Math.floor(Math.random() * 15);
+                p._shootCooldown = 20 + Math.floor(Math.random() * 30);
             }
         }
     }
 
+    // War: gradually fill empty slots with realistic bots
     _startWarFill() {
         if (this._warFilling) return;
         this._warFilling = true;
-        const total = 20;
+        this.broadcast('war_fill_started', {});
+        this.monsterAI.spawnWave(8); // Spawn monsters for war
 
         const fillNext = () => {
             const count = Object.keys(this.gs.players).length;
-            if (count >= total) {
+            if (count >= 20) {
+                // Roster full — start countdown then game
                 this._triggerCountdown();
                 return;
             }
-            this._spawnBot('none');
-            this.broadcast('war_roster', { players: this._getRosterList() });
+            // Spawn with realistic message delay (simulates player joining)
+            this._spawnRealisticBot('none', false);
+            this.broadcast('war_roster', { players: this._getRosterList(), total: Object.keys(this.gs.players).length });
             this.clock.setTimeout(fillNext, 2000);
         };
 
@@ -309,12 +307,14 @@ class MazeRoom extends colyseus.Room {
     _getRosterList() {
         return Object.values(this.gs.players).map(p => ({
             name: p.name,
-            isBot: p.isBot,
             sessionId: p.sessionId,
+            isBot: p.isBot,
         }));
     }
 
-    // ── Lobby ──
+    // ───────────────────────────────────────
+    // Lobby broadcasting
+    // ───────────────────────────────────────
 
     _broadcastLobbyState() {
         if (this.gs.phase !== 'waiting') return;
@@ -326,12 +326,9 @@ class MazeRoom extends colyseus.Room {
         }));
         this.broadcast('lobby_players', list);
 
-        // War roster
         if (this.options.mode === 'war') {
-            this.broadcast('war_roster', { players: list });
+            this.broadcast('war_roster', { players: list, total: list.length });
         }
-
-        // Squad codes
         if (this.options.mode === 'squad') {
             this.broadcast('squad_codes', { redCode: this.redCode, blueCode: this.blueCode });
         }
@@ -339,20 +336,16 @@ class MazeRoom extends colyseus.Room {
 
     _triggerCountdown() {
         if (this.gs.phase !== 'waiting' || this.countdownTimer) return;
-        let countdownTime = 5;
-        if (this.options.mode === 'war') countdownTime = 5;
-        if (this.options.mode === 'squad') countdownTime = 10;
-
-        this.countdownSeconds = countdownTime;
-        this.broadcast('countdown', { seconds: this.countdownSeconds });
+        let sec = this.options.mode === 'war' ? 3 : 5;
+        this.broadcast('countdown', { seconds: sec });
         this.countdownTimer = this.clock.setInterval(() => {
-            this.countdownSeconds--;
-            if (this.countdownSeconds <= 0) {
+            sec--;
+            if (sec <= 0) {
                 this.countdownTimer.clear();
                 this.countdownTimer = null;
                 this._startGame();
             } else {
-                this.broadcast('countdown', { seconds: this.countdownSeconds });
+                this.broadcast('countdown', { seconds: sec });
             }
         }, 1000);
     }
@@ -360,15 +353,22 @@ class MazeRoom extends colyseus.Room {
     _startGame() {
         if (this.gs.phase !== 'waiting') return;
         this.gs.phase = 'playing';
+
+        // Ensure monsters are spawned
+        const monsterCount = Object.values(this.gs.monsters).filter(m => m.alive).length;
+        if (monsterCount < 5) this.monsterAI.spawnWave(8);
+
         this.broadcast('game_started', {
             seed: this.gs.seed,
             mode: this.gs.mode,
             players: Object.values(this.gs.players),
         });
-        console.log(`[MazeRoom] STARTED — mode:${this.gs.mode} players:${Object.keys(this.gs.players).length}`);
+        console.log(`[MazeRoom:${this.roomId}] GAME STARTED — ${this.gs.mode} — ${Object.keys(this.gs.players).length} players`);
     }
 
-    // ── Tick ──
+    // ───────────────────────────────────────
+    // Tick
+    // ───────────────────────────────────────
 
     _tick() {
         if (this.gs.phase !== 'playing') return;
@@ -377,7 +377,7 @@ class MazeRoom extends colyseus.Room {
         // Bot AI
         this._botAI();
 
-        // Apply inputs (real players)
+        // Real player inputs
         for (const [sid, input] of Object.entries(this.playerInputs)) {
             const p = this.gs.players[sid];
             if (!p || !p.alive || p.isBot) continue;
@@ -386,18 +386,16 @@ class MazeRoom extends colyseus.Room {
                 p.x += (input.dx / len) * PLAYER_SPEED;
                 p.y += (input.dy / len) * PLAYER_SPEED;
                 p.rotation = input.rotation;
-                p.x = Math.max(0, Math.min(p.x, this.monsterAI.worldW));
-                p.y = Math.max(0, Math.min(p.y, this.monsterAI.worldH));
+                p.x = Math.max(16, Math.min(p.x, this.monsterAI.worldW || 2000));
+                p.y = Math.max(16, Math.min(p.y, this.monsterAI.worldH || 2000));
             }
         }
 
         // Bullets
         for (let i = this.gs.bullets.length - 1; i >= 0; i--) {
             const b = this.gs.bullets[i];
-            b.x += b.vx; b.y += b.vy;
-            b.ttl--;
-            if (b.ttl <= 0) { this.gs.bullets.splice(i, 1); continue; }
-            if (this._checkBulletHit(b)) { this.gs.bullets.splice(i, 1); }
+            b.x += b.vx; b.y += b.vy; b.ttl--;
+            if (b.ttl <= 0 || this._checkBulletHit(b)) { this.gs.bullets.splice(i, 1); }
         }
 
         // Monsters
@@ -410,59 +408,67 @@ class MazeRoom extends colyseus.Room {
         if (this.gs.phase !== 'playing') return;
         const p = this.gs.players[ownerId];
         if (!p || !p.alive) return;
-
+        const spd = BULLET_SPEED;
+        const len = Math.sqrt(msg.vx * msg.vx + msg.vy * msg.vy) || 1;
         this.gs.bullets.push({
             id: `b${this.bulletCounter++}`,
             x: p.x, y: p.y,
-            vx: (msg.vx / 400) * BULLET_SPEED * 20,
-            vy: (msg.vy / 400) * BULLET_SPEED * 20,
+            vx: (msg.vx / len) * spd,
+            vy: (msg.vy / len) * spd,
             damage: msg.damage || 10,
-            ownerId, isExplosive: msg.isExplosive || false,
-            ttl: BULLET_TTL_TICKS,
+            ownerId, isExplosive: !!msg.isExplosive,
+            ttl: BULLET_TTL,
         });
     }
 
-    _checkBulletHit(bullet) {
+    _checkBulletHit(b) {
         const R2 = 18 * 18;
-
         for (const [sid, p] of Object.entries(this.gs.players)) {
-            if (sid === bullet.ownerId || !p.alive) continue;
+            if (sid === b.ownerId || !p.alive) continue;
             if (this.options.teams) {
-                const owner = this.gs.players[bullet.ownerId];
-                if (owner && owner.team === p.team) continue;
+                const owner = this.gs.players[b.ownerId];
+                if (owner && owner.team === p.team && owner.team !== 'none') continue;
             }
-            const dx = bullet.x - p.x, dy = bullet.y - p.y;
-            if (dx * dx + dy * dy < R2) {
-                this._damagePlayer(p, bullet.damage, bullet.ownerId);
-                return true;
-            }
+            const dx = b.x - p.x, dy = b.y - p.y;
+            if (dx*dx + dy*dy < R2) { this._damagePlayer(p, b.damage, b.ownerId); return true; }
         }
-
         for (const m of Object.values(this.gs.monsters)) {
             if (!m.alive) continue;
-            const dx = bullet.x - m.x, dy = bullet.y - m.y;
-            if (dx * dx + dy * dy < R2) {
-                m.health -= bullet.damage;
-                if (m.health <= 0) {
-                    m.alive = false;
-                    const p = this.gs.players[bullet.ownerId];
-                    if (p) p.kills++;
-                }
+            const dx = b.x - m.x, dy = b.y - m.y;
+            if (dx*dx + dy*dy < R2) {
+                m.health -= b.damage;
+                if (m.health <= 0) { m.alive = false; const p=this.gs.players[b.ownerId]; if(p) p.kills++; }
                 return true;
             }
         }
-
         return false;
     }
 
     _damagePlayer(target, dmg, killerId) {
         target.health -= dmg;
         if (target.health <= 0) {
-            target.health = 0;
-            target.alive = false;
-            const killer = this.gs.players[killerId];
-            if (killer) killer.kills++;
+            target.health = 0; target.alive = false;
+            const k = this.gs.players[killerId];
+            if (k) k.kills++;
             this._checkWinCondition();
+        }
+    }
+
+    _checkWinCondition() {
+        const alive = Object.values(this.gs.players).filter(p => p.alive);
+        if (this.options.mode === 'duel' && alive.length <= 1) {
+            const winner = alive[0] || { uid: 'draw', name: 'Draw' };
+            this._endGame(winner.uid, winner.name); return;
+        }
+        if (this.options.teams) {
+            const red  = alive.filter(p => p.team === 'red').length;
+            const blue = alive.filter(p => p.team === 'blue').length;
+            if (red === 0 && blue > 0) { this._endGame('blue', 'الفريق الأزرق'); return; }
+            if (blue === 0 && red > 0) { this._endGame('red',  'الفريق الأحمر'); return; }
+        }
+        if (this.options.mode === 'war' && alive.length <= 1) {
+            const winner = alive[0] || { uid: 'draw', name: 'Draw' };
+            this._endGame(winner.uid, winner.name);
         }
     }
 
@@ -471,15 +477,10 @@ class MazeRoom extends colyseus.Room {
         if (!p || !p.alive) return;
         p.keys++;
         this.broadcast('key_collected', { keyId, by: sid, team: p.team });
-        this._checkPortalSpawn();
-    }
-
-    _checkPortalSpawn() {
-        const total = Object.values(this.gs.players).reduce((s, p) => s + p.keys, 0);
+        const total = Object.values(this.gs.players).reduce((s,p)=>s+p.keys, 0);
         if (total >= 10 && !this._portalSpawned) {
             this._portalSpawned = true;
-            const pos = this.monsterAI.getSpawnPos();
-            this.broadcast('portal_spawned', pos);
+            this.broadcast('portal_spawned', this.monsterAI.getSpawnPos());
         }
     }
 
@@ -491,49 +492,23 @@ class MazeRoom extends colyseus.Room {
         this._endGame(winner, p.name);
     }
 
-    _checkWinCondition() {
-        const alive = Object.values(this.gs.players).filter(p => p.alive);
-        if (this.options.mode === 'duel' && alive.length === 1) {
-            this._endGame(alive[0].uid, alive[0].name);
-            return;
-        }
-        if (this.options.teams) {
-            const red  = alive.filter(p => p.team === 'red').length;
-            const blue = alive.filter(p => p.team === 'blue').length;
-            if (red === 0 && blue > 0) this._endGame('blue', 'الفريق الأزرق');
-            if (blue === 0 && red > 0) this._endGame('red', 'الفريق الأحمر');
-        }
-        if (this.options.mode === 'war' && alive.length === 1) {
-            this._endGame(alive[0].uid, alive[0].name);
-        }
-    }
-
-    _endGame(winner, killerName) {
+    _endGame(winner, name) {
         if (this.gs.phase === 'ended') return;
-        this.gs.phase = 'ended';
-        this.gs.winner = winner;
-        this.broadcast('game_over', { winner, killerName, mode: this.gs.mode });
-        this.clock.setTimeout(() => this.disconnect(), 5000);
-    }
-
-    _broadcastState() {
-        this.broadcast('state_full', this.gs);
+        this.gs.phase = 'ended'; this.gs.winner = winner;
+        this.broadcast('game_over', { winner, killerName: name, mode: this.gs.mode });
+        this.clock.setTimeout(() => this.disconnect(), 6000);
     }
 
     _broadcastCompact() {
         this.broadcast('state_tick', {
             tick: this.gs.tick,
-            players: Object.fromEntries(
-                Object.entries(this.gs.players).map(([sid, p]) => [sid, {
-                    x: p.x, y: p.y, rotation: p.rotation,
-                    health: p.health, alive: p.alive, keys: p.keys, kills: p.kills,
-                }])
-            ),
-            monsters: Object.fromEntries(
-                Object.entries(this.gs.monsters).map(([id, m]) => [id, {
-                    x: m.x, y: m.y, health: m.health, alive: m.alive,
-                }])
-            ),
+            players: Object.fromEntries(Object.entries(this.gs.players).map(([sid, p]) => [sid, {
+                x: p.x, y: p.y, rotation: p.rotation,
+                health: p.health, alive: p.alive, keys: p.keys, kills: p.kills,
+            }])),
+            monsters: Object.fromEntries(Object.entries(this.gs.monsters).map(([id, m]) => [id, {
+                x: m.x, y: m.y, health: m.health, alive: m.alive,
+            }])),
             bullets: this.gs.bullets.map(b => ({ id: b.id, x: b.x, y: b.y })),
         });
     }

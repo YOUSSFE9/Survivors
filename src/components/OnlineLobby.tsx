@@ -1,26 +1,18 @@
 /**
- * OnlineLobby — Complete online lobby with all 3 modes fully implemented.
- * - Duel: Random matchmaking (30s → bot) + Friend Challenge (create/join)
- * - Squad: Team codes Red/Blue, host controls
- * - War: 20-slot roster, gradual bot fill, auto-start
+ * OnlineLobby — Full lobby UI for all 3 online modes.
+ * - Duel: Random (15s → bot) + Friend Challenge (room code, auto-start)
+ * - Squad: Red/Blue teams with codes, host controls
+ * - War: 20-slot roster, gradual fill, auto-start
+ *
+ * IMPORTANT: Bots are invisible to players — no [BOT] tags, no isBot indicators in UI.
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { network } from '../game/multiplayer/NetworkManager';
 
-/* ─── Mode config ─── */
 const MODES = [
-    {
-        id: 'war', emoji: '💀', label: 'حرب', sub: '20 لاعباً',
-        desc: 'الجميع ضد الجميع — الناجي الأخير يفوز', color: '#ff8833', maxPlayers: 20,
-    },
-    {
-        id: 'squad', emoji: '🛡️', label: 'فرقة', sub: 'حتى 4 × 4',
-        desc: 'فريقك ضد الفريق المنافس', color: '#4488ff', maxPlayers: 8,
-    },
-    {
-        id: 'duel', emoji: '⚔️', label: 'مبارزة', sub: '1 ضد 1',
-        desc: 'قتال مباشر بينك وبين خصم واحد', color: '#ff4455', maxPlayers: 2,
-    },
+    { id: 'war',   emoji: '💀', label: 'حرب',    sub: '20 لاعباً',   desc: 'الجميع ضد الجميع — الناجي الأخير يفوز', color: '#ff8833', maxPlayers: 20 },
+    { id: 'squad', emoji: '🛡️', label: 'فرقة',   sub: 'حتى 4 × 4',  desc: 'فريقك ضد الفريق المنافس',               color: '#4488ff', maxPlayers: 8  },
+    { id: 'duel',  emoji: '⚔️', label: 'مبارزة', sub: '1 ضد 1',     desc: 'قتال مباشر بينك وبين خصم واحد',         color: '#ff4455', maxPlayers: 2  },
 ] as const;
 
 type ModeId = 'war' | 'squad' | 'duel';
@@ -35,9 +27,6 @@ interface Props {
     onBack: () => void;
 }
 
-/* ─── Roster slot (war) ─── */
-const EMPTY_SLOTS = Array.from({ length: 20 }, (_, i) => ({ id: i, player: null as PlayerEntry | null }));
-
 export default function OnlineLobby({ uid, playerName, onBack, onMatchFound }: Props) {
     const [mode, setMode] = useState<ModeId>('war');
     const [duelFlow, setDuelFlow] = useState<DuelFlow>('none');
@@ -46,40 +35,28 @@ export default function OnlineLobby({ uid, playerName, onBack, onMatchFound }: P
     const [status, setStatus] = useState('');
     const [busy, setBusy] = useState(false);
 
-    // Waiting room
     const [waiting, setWaiting] = useState(false);
     const [players, setPlayers] = useState<PlayerEntry[]>([]);
     const [countdown, setCountdown] = useState<number | null>(null);
-    const [myTeam, setMyTeam] = useState('');
     const [isHost, setIsHost] = useState(false);
     const [roomRef, setRoomRef] = useState<any>(null);
 
-    // Room codes
     const [redCode, setRedCode] = useState('');
     const [blueCode, setBlueCode] = useState('');
-    const [singleCode, setSingleCode] = useState('');
+    const [roomCode, setRoomCode] = useState('');
 
-    // War roster (20 slots)
-    const [warRoster, setWarRoster] = useState<PlayerEntry[]>([]);
-
-    // Duel random timer
-    const [duelTimer, setDuelTimer] = useState<number | null>(null);
-    const duelTimerRef = useRef<any>(null);
+    const [searchTimer, setSearchTimer] = useState<number | null>(null);
+    const timerRef = useRef<any>(null);
 
     const selectedMode = MODES.find(m => m.id === mode)!;
 
-    /* ── Attach room listeners ── */
+    /* ── Room listeners ── */
     const listenRoom = useCallback((room: any, m: ModeId) => {
         setRoomRef(room);
 
-        room.onMessage('lobby_players', (list: PlayerEntry[]) => {
-            setPlayers(list);
-            const me = list.find((p: PlayerEntry) => p.sessionId === room.sessionId);
-            if (me) setMyTeam(me.team);
-        });
+        room.onMessage('lobby_players', (list: PlayerEntry[]) => setPlayers(list));
 
-        room.onMessage('war_roster', ({ players: r }: { players: PlayerEntry[] }) => {
-            setWarRoster(r);
+        room.onMessage('war_roster', ({ players: r }: any) => {
             setPlayers(r);
         });
 
@@ -88,25 +65,25 @@ export default function OnlineLobby({ uid, playerName, onBack, onMatchFound }: P
             if (bc) setBlueCode(bc);
         });
 
-        room.onMessage('red_room_code', ({ code }: any) => setRedCode(code));
-        room.onMessage('blue_room_code', ({ code }: any) => setBlueCode(code));
-
         room.onMessage('host_status', ({ isHost: h }: any) => setIsHost(h));
         room.onMessage('new_host', ({ hostId }: any) => setIsHost(room.sessionId === hostId));
 
         room.onMessage('countdown', ({ seconds }: any) => {
             setCountdown(seconds);
-            if (seconds != null) setStatus(`🔥 تبدأ خلال ${seconds}...`);
-            else setStatus('في انتظار اللاعبين...');
+            setStatus(`🔥 تبدأ خلال ${seconds}...`);
+        });
+
+        room.onMessage('war_fill_started', () => {
+            setStatus('⚡ يتم ملء القائمة...');
         });
 
         room.onMessage('game_started', () => {
-            if (duelTimerRef.current) clearInterval(duelTimerRef.current);
+            if (timerRef.current) clearInterval(timerRef.current);
             onMatchFound({ mode: m, roomId: room.id });
         });
     }, [onMatchFound]);
 
-    /* ── Connect handler ── */
+    /* ── Connect ── */
     const handleConnect = async (overrideDuel?: DuelFlow, overrideSquad?: SquadFlow) => {
         if (busy) return;
         setBusy(true);
@@ -117,83 +94,79 @@ export default function OnlineLobby({ uid, playerName, onBack, onMatchFound }: P
         try {
             network.connect();
 
-            /* DUEL — Random */
+            /* DUEL — Random matchmaking */
             if (mode === 'duel' && dFlow === 'random') {
                 const room = await network.joinOrCreate('duel', { uid, name: playerName });
-                setSingleCode('');
-                setStatus('🔍 جارِ البحث عن خصم... (30 ثانية)');
-                setWaiting(true);
-                setBusy(false);
+                setRoomCode('');
+                setRedCode(''); setBlueCode('');
+                setStatus('🔍 جارِ البحث عن خصم...');
+                setWaiting(true); setBusy(false);
                 listenRoom(room, 'duel');
-                // Countdown timer UI
-                let t = 30;
-                setDuelTimer(t);
-                duelTimerRef.current = setInterval(() => {
+                // 15-second search timer UI
+                let t = 15;
+                setSearchTimer(t);
+                timerRef.current = setInterval(() => {
                     t--;
-                    setDuelTimer(t);
+                    setSearchTimer(t);
                     if (t <= 0) {
-                        clearInterval(duelTimerRef.current);
-                        setDuelTimer(null);
-                        setStatus('⚔️ لا يوجد خصم — جارِ تحضير بوت قوي...');
+                        clearInterval(timerRef.current);
+                        setSearchTimer(null);
+                        setStatus('🔍 تم العثور على خصم!');
                     }
                 }, 1000);
                 return;
             }
 
-            /* DUEL — Create private room */
+            /* DUEL — Create private room (friend challenge) */
             if (mode === 'duel' && dFlow === 'create') {
-                const { room, roomId: rid } = await network.createPrivateRoom({ uid, name: playerName });
-                setSingleCode(rid);
+                const { room, roomId: rid } = await network.createPrivateRoom('duel', { uid, name: playerName });
+                setRoomCode(rid);
+                setRedCode(''); setBlueCode('');
                 setStatus('انتظار صديقك...');
-                setWaiting(true);
-                setBusy(false);
+                setWaiting(true); setBusy(false);
                 listenRoom(room, 'duel');
                 return;
             }
 
             /* DUEL — Join by code */
             if (mode === 'duel' && dFlow === 'join') {
-                const code = joinCode.trim().toUpperCase();
+                const code = joinCode.trim();
                 if (!code) { setStatus('⚠️ أدخل رمز الغرفة'); setBusy(false); return; }
                 const room = await network.joinOrCreate('duel', { uid, name: playerName, roomCode: code });
-                setStatus('تم الانضمام! في انتظار بدء المباراة...');
-                setWaiting(true);
-                setBusy(false);
+                setStatus('تم الانضمام!');
+                setWaiting(true); setBusy(false);
                 listenRoom(room, 'duel');
                 return;
             }
 
             /* SQUAD — Create Red */
             if (mode === 'squad' && sFlow === 'create_red') {
-                const { room } = await network.createPrivateRoom({ uid, name: playerName });
+                const { room } = await network.createPrivateRoom('squad', { uid, name: playerName, reqTeam: 'red' });
                 setStatus('انتظار اللاعبين...');
-                setWaiting(true);
-                setBusy(false);
+                setWaiting(true); setBusy(false);
                 listenRoom(room, 'squad');
                 return;
             }
 
             /* SQUAD — Create Blue */
             if (mode === 'squad' && sFlow === 'create_blue') {
-                const { room } = await network.createPrivateRoom({ uid, name: playerName, team: 'blue' } as any);
+                const { room } = await network.createPrivateRoom('squad', { uid, name: playerName, reqTeam: 'blue' });
                 setStatus('انتظار اللاعبين...');
-                setWaiting(true);
-                setBusy(false);
+                setWaiting(true); setBusy(false);
                 listenRoom(room, 'squad');
                 return;
             }
 
             /* SQUAD — Join by code */
             if (mode === 'squad' && sFlow === 'join') {
-                const fullCode = joinCode.trim().toUpperCase();
+                const fullCode = joinCode.trim();
                 if (!fullCode) { setStatus('⚠️ أدخل رمز الغرفة'); setBusy(false); return; }
                 let baseId = fullCode, reqTeam = '';
                 if (fullCode.endsWith('-R')) { baseId = fullCode.slice(0, -2); reqTeam = 'red'; }
                 if (fullCode.endsWith('-B')) { baseId = fullCode.slice(0, -2); reqTeam = 'blue'; }
                 const room = await network.joinOrCreate('squad', { uid, name: playerName, roomCode: baseId, reqTeam });
                 setStatus('انضممت!');
-                setWaiting(true);
-                setBusy(false);
+                setWaiting(true); setBusy(false);
                 listenRoom(room, 'squad');
                 return;
             }
@@ -201,13 +174,11 @@ export default function OnlineLobby({ uid, playerName, onBack, onMatchFound }: P
             /* WAR */
             if (mode === 'war') {
                 const room = await network.joinOrCreate('war', { uid, name: playerName });
-                setStatus('في انتظار اللاعبين... (30 ثانية ثم تبدأ المعركة)');
-                setWaiting(true);
-                setBusy(false);
+                setStatus('في انتظار اللاعبين...');
+                setWaiting(true); setBusy(false);
                 listenRoom(room, 'war');
                 return;
             }
-
         } catch (e: any) {
             console.error('[OnlineLobby] connect error:', e);
             setStatus('❌ فشل الاتصال — تأكد من اتصالك بالإنترنت');
@@ -216,30 +187,26 @@ export default function OnlineLobby({ uid, playerName, onBack, onMatchFound }: P
     };
 
     const handleLeave = async () => {
-        if (duelTimerRef.current) clearInterval(duelTimerRef.current);
+        if (timerRef.current) clearInterval(timerRef.current);
         await network.leave();
-        setWaiting(false);
-        setPlayers([]); setWarRoster([]);
-        setRedCode(''); setBlueCode(''); setSingleCode('');
-        setCountdown(null); setDuelTimer(null);
-        setStatus('');
-        setDuelFlow('none'); setSquadFlow('none');
-        setBusy(false);
+        setWaiting(false); setPlayers([]); setCountdown(null); setSearchTimer(null);
+        setRedCode(''); setBlueCode(''); setRoomCode('');
+        setStatus(''); setDuelFlow('none'); setSquadFlow('none'); setBusy(false);
     };
 
-    const cdColor = countdown != null ? (countdown <= 3 ? '#ff4455' : countdown <= 5 ? '#ffaa33' : '#44ffaa') : '#44ffaa';
+    const cdColor = countdown != null ? (countdown <= 3 ? '#ff4455' : '#44ffaa') : '#44ffaa';
 
     /* ════════════════════════════════════
        WAITING ROOM
     ════════════════════════════════════ */
     if (waiting) {
-        const redPlayers = players.filter(p => p.team === 'red');
+        const redPlayers  = players.filter(p => p.team === 'red');
         const bluePlayers = players.filter(p => p.team === 'blue');
-        const freeSlots = 20 - warRoster.length;
+        const isDuelFriend = mode === 'duel' && roomCode;
 
         return (
             <div style={S.overlay}>
-                <div style={{ ...S.card, maxWidth: mode === 'war' ? 660 : 580 }}>
+                <div style={{ ...S.card, maxWidth: mode === 'war' ? 660 : 540 }}>
                     {/* Header */}
                     <div style={S.header}>
                         <div style={{ fontSize: 36 }}>
@@ -253,32 +220,36 @@ export default function OnlineLobby({ uid, playerName, onBack, onMatchFound }: P
                         <p style={S.sub}>{status}</p>
                     </div>
 
-                    {/* Duel random timer */}
-                    {mode === 'duel' && duelTimer != null && (
+                    {/* Duel random search timer */}
+                    {mode === 'duel' && searchTimer != null && (
                         <div style={{ textAlign: 'center', marginBottom: 16 }}>
-                            <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)', marginBottom: 6 }}>
-                                وقت البحث عن خصم
-                            </div>
+                            <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginBottom: 6 }}>جارِ البحث عن خصم</div>
                             <div style={{ background: 'rgba(255,255,255,0.06)', borderRadius: 10, height: 6, overflow: 'hidden' }}>
                                 <div style={{
                                     height: '100%', borderRadius: 10,
-                                    background: duelTimer > 10 ? '#44ffaa' : duelTimer > 5 ? '#ffaa33' : '#ff4455',
-                                    width: `${(duelTimer / 30) * 100}%`,
+                                    background: searchTimer > 7 ? '#44ffaa' : searchTimer > 3 ? '#ffaa33' : '#ff4455',
+                                    width: `${(searchTimer / 15) * 100}%`,
                                     transition: 'width 1s linear, background 0.3s',
                                 }} />
                             </div>
-                            <div style={{ marginTop: 6, fontSize: 22, fontWeight: 700, color: duelTimer > 10 ? '#44ffaa' : '#ff4455' }}>
-                                {duelTimer}s
+                            <div style={{ marginTop: 6, fontSize: 20, fontWeight: 700, color: searchTimer > 7 ? '#44ffaa' : '#ff4455' }}>
+                                {searchTimer}s
                             </div>
                         </div>
                     )}
 
-                    {/* Room Codes */}
-                    {(redCode || blueCode || singleCode) && (
+                    {/* Room code (duel friend only — NOT team codes) */}
+                    {isDuelFriend && (
+                        <div style={{ marginBottom: 18 }}>
+                            <CodeBox label="🔗 رمز الغرفة — شاركه مع صديقك" code={roomCode} color="#44ffaa" />
+                        </div>
+                    )}
+
+                    {/* Squad team codes */}
+                    {mode === 'squad' && (redCode || blueCode) && (
                         <div style={{ display: 'flex', gap: 10, marginBottom: 18, flexWrap: 'wrap' }}>
-                            {singleCode && <CodeBox label="رمز الغرفة 🔗" code={singleCode} color="#44ffaa" />}
-                            {redCode && <CodeBox label="رمز الفريق الأحمر 🔴" code={redCode} color="#ff4455" />}
-                            {blueCode && <CodeBox label="رمز الفريق الأزرق 🔵" code={blueCode} color="#4488ff" />}
+                            <CodeBox label="🔴 رمز الفريق الأحمر" code={redCode} color="#ff4455" />
+                            <CodeBox label="🔵 رمز الفريق الأزرق" code={blueCode} color="#4488ff" />
                         </div>
                     )}
 
@@ -286,26 +257,27 @@ export default function OnlineLobby({ uid, playerName, onBack, onMatchFound }: P
                     {mode === 'war' && (
                         <div style={S.playerSection}>
                             <div style={{ ...S.sectionTitle, display: 'flex', justifyContent: 'space-between' }}>
-                                <span>قائمة الحرب</span>
-                                <span style={{ color: '#ffaa33' }}>{warRoster.length} / 20</span>
+                                <span>قائمة المحاربين</span>
+                                <span style={{ color: '#ffaa33' }}>{players.length} / 20</span>
                             </div>
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
                                 {Array.from({ length: 20 }).map((_, i) => {
-                                    const p = warRoster[i];
+                                    const p = players[i];
                                     return (
                                         <div key={i} style={{
                                             display: 'flex', alignItems: 'center', gap: 8,
                                             padding: '5px 10px', borderRadius: 8,
-                                            background: p ? (p.isBot ? 'rgba(255,136,51,0.08)' : 'rgba(68,255,170,0.08)') : 'rgba(255,255,255,0.03)',
-                                            border: `1px solid ${p ? (p.isBot ? 'rgba(255,136,51,0.2)' : 'rgba(68,255,170,0.2)') : 'rgba(255,255,255,0.05)'}`,
+                                            background: p ? 'rgba(68,255,170,0.06)' : 'rgba(255,255,255,0.02)',
+                                            border: `1px solid ${p ? 'rgba(68,255,170,0.15)' : 'rgba(255,255,255,0.04)'}`,
+                                            transition: 'all 0.3s',
                                         }}>
-                                            <span style={{ fontSize: 14, opacity: p ? 1 : 0.25 }}>
-                                                {p ? (p.isBot ? '🤖' : '👤') : `${i + 1}`}
+                                            <span style={{ fontSize: 14, opacity: p ? 1 : 0.2 }}>
+                                                {p ? '👤' : `${i + 1}`}
                                             </span>
-                                            <span style={{ fontSize: 12, color: p ? (p.isBot ? '#ff8833' : '#cde') : 'rgba(255,255,255,0.15)' }}>
+                                            <span style={{ fontSize: 12, color: p ? '#cde' : 'rgba(255,255,255,0.12)' }}>
                                                 {p ? p.name : '— فارغ —'}
                                             </span>
-                                            {p?.name === playerName && !p.isBot && (
+                                            {p?.name === playerName && (
                                                 <span style={{ fontSize: 10, color: '#44ffaa', marginRight: 'auto' }}>أنت</span>
                                             )}
                                         </div>
@@ -332,7 +304,7 @@ export default function OnlineLobby({ uid, playerName, onBack, onMatchFound }: P
                     {mode === 'duel' && players.length > 0 && (
                         <div style={S.playerSection}>
                             <div style={S.sectionTitle}>اللاعبون ({players.length}/2)</div>
-                            <div style={S.playerList}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                                 {players.map(p => (
                                     <PlayerRow key={p.sessionId} player={p} myName={playerName} />
                                 ))}
@@ -340,8 +312,8 @@ export default function OnlineLobby({ uid, playerName, onBack, onMatchFound }: P
                         </div>
                     )}
 
-                    {/* Host Controls */}
-                    {isHost && countdown == null && mode !== 'war' && (
+                    {/* Host Controls (squad only — duel auto-starts, war auto-fills) */}
+                    {isHost && countdown == null && mode === 'squad' && (
                         <div style={{ background: 'rgba(68,255,170,0.06)', border: '1px solid rgba(68,255,170,0.2)', borderRadius: 12, padding: '12px 16px', marginBottom: 12, textAlign: 'center' }}>
                             <div style={{ color: '#44ffaa', fontSize: 12, marginBottom: 10 }}>👑 أنت صاحب الغرفة</div>
                             <button style={{ ...S.btn, background: '#22aa66', width: '100%', fontSize: 15 }}
@@ -379,7 +351,9 @@ export default function OnlineLobby({ uid, playerName, onBack, onMatchFound }: P
                             background: mode === m.id ? `${m.color}22` : 'rgba(255,255,255,0.03)',
                             cursor: busy ? 'not-allowed' : 'pointer',
                             transform: mode === m.id ? 'scale(1.03)' : 'scale(1)',
-                        }} onClick={() => { if (!busy) { setMode(m.id); setDuelFlow('none'); setSquadFlow('none'); } }}>
+                        }} onClick={() => {
+                            if (!busy) { setMode(m.id as ModeId); setDuelFlow('none'); setSquadFlow('none'); setStatus(''); }
+                        }}>
                             <div style={{ fontSize: 32 }}>{m.emoji}</div>
                             <div style={{ color: m.color, fontWeight: 700, fontSize: 16, marginTop: 6 }}>{m.label}</div>
                             <div style={S.modeSub}>{m.sub}</div>
@@ -391,20 +365,22 @@ export default function OnlineLobby({ uid, playerName, onBack, onMatchFound }: P
                 {/* ── DUEL sub-options ── */}
                 {mode === 'duel' && duelFlow === 'none' && (
                     <div style={{ marginBottom: 16 }}>
-                        <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
-                            <button style={{ ...S.btn, background: '#8b1a2a', flex: 1, fontSize: 13 }}
+                        <div style={{ display: 'flex', gap: 10 }}>
+                            <button style={{ ...S.btn, background: '#8b1a2a', flex: 1 }}
                                 onClick={() => { setDuelFlow('random'); handleConnect('random'); }}>
-                                🎲 عشوائي <span style={{ opacity: 0.6, fontSize: 11, display: 'block', fontWeight: 400 }}>30 ثانية ثم بوت</span>
+                                <div>🎲 عشوائي</div>
+                                <div style={{ fontSize: 10, opacity: 0.6, fontWeight: 400, marginTop: 2 }}>ابحث عن خصم</div>
                             </button>
-                            <button style={{ ...S.btn, background: '#1a3a5a', flex: 1, fontSize: 13 }}
+                            <button style={{ ...S.btn, background: '#1a3a5a', flex: 1 }}
                                 onClick={() => setDuelFlow('create')}>
-                                👥 تحدي صديق
+                                <div>👥 تحدي صديق</div>
+                                <div style={{ fontSize: 10, opacity: 0.6, fontWeight: 400, marginTop: 2 }}>أنشئ أو انضم</div>
                             </button>
                         </div>
                     </div>
                 )}
 
-                {/* DUEL — Friend options */}
+                {/* DUEL — Friend sub-options */}
                 {mode === 'duel' && duelFlow === 'create' && (
                     <div style={{ marginBottom: 14, display: 'flex', gap: 10 }}>
                         <button style={{ ...S.btn, background: '#1a5a2a', flex: 1 }}
@@ -422,7 +398,7 @@ export default function OnlineLobby({ uid, playerName, onBack, onMatchFound }: P
                 {mode === 'duel' && duelFlow === 'join' && (
                     <div style={{ marginBottom: 14 }}>
                         <input style={S.input} placeholder="أدخل رمز الغرفة..."
-                            value={joinCode} onChange={e => setJoinCode(e.target.value.toUpperCase())}
+                            value={joinCode} onChange={e => setJoinCode(e.target.value)}
                             maxLength={30} autoFocus />
                     </div>
                 )}
@@ -454,15 +430,15 @@ export default function OnlineLobby({ uid, playerName, onBack, onMatchFound }: P
                 {mode === 'squad' && squadFlow === 'join' && (
                     <div style={{ marginBottom: 14 }}>
                         <input style={S.input} placeholder="أدخل رمز الفريق (ينتهي بـ -R أو -B)..."
-                            value={joinCode} onChange={e => setJoinCode(e.target.value.toUpperCase())}
+                            value={joinCode} onChange={e => setJoinCode(e.target.value)}
                             maxLength={30} autoFocus />
                     </div>
                 )}
 
                 {/* Status */}
                 {status && (
-                    <div style={{ ...S.sub, textAlign: 'center', marginBottom: 12, color: status.startsWith('❌') ? '#ff6666' : 'rgba(255,255,255,0.55)' }}>
-                        {busy && <span style={{ marginLeft: 6 }}>⟳</span>}{status}
+                    <div style={{ textAlign: 'center', marginBottom: 12, fontSize: 13, color: status.startsWith('❌') ? '#ff6666' : 'rgba(255,255,255,0.5)' }}>
+                        {busy && <span style={{ marginLeft: 6 }}>⟳</span>} {status}
                     </div>
                 )}
 
@@ -472,29 +448,23 @@ export default function OnlineLobby({ uid, playerName, onBack, onMatchFound }: P
                         ← رجوع
                     </button>
 
-                    {/* WAR — always show start */}
                     {mode === 'war' && (
-                        <button style={{ ...S.btn, background: busy ? '#555' : '#ff8833', flex: 2, fontSize: 15, opacity: busy ? 0.7 : 1 }}
-                            onClick={() => handleConnect()}
-                            disabled={busy}>
-                            {busy ? '⟳ جارِ الاتصال...' : '💀 ادخل الحرب'}
+                        <button style={{ ...S.btn, background: busy ? '#555' : '#ff8833', flex: 2, fontSize: 15 }}
+                            onClick={() => handleConnect()} disabled={busy}>
+                            {busy ? '⟳...' : '💀 ادخل الحرب'}
                         </button>
                     )}
 
-                    {/* DUEL — show action button when flow needs it */}
-                    {mode === 'duel' && (duelFlow === 'join' || duelFlow === 'create') && (
-                        <button style={{ ...S.btn, background: busy ? '#555' : '#ff4455', flex: 2, fontSize: 15, opacity: busy ? 0.7 : 1 }}
-                            onClick={() => handleConnect(duelFlow)}
-                            disabled={busy}>
-                            {busy ? '⟳ جارِ الاتصال...' : '🚀 تأكيد'}
+                    {mode === 'duel' && duelFlow === 'join' && (
+                        <button style={{ ...S.btn, background: busy ? '#555' : '#ff4455', flex: 2, fontSize: 15 }}
+                            onClick={() => handleConnect('join')} disabled={busy}>
+                            {busy ? '⟳...' : '🚀 انضم'}
                         </button>
                     )}
 
-                    {/* SQUAD — confirm join */}
                     {mode === 'squad' && squadFlow === 'join' && (
-                        <button style={{ ...S.btn, background: busy ? '#555' : '#4488ff', flex: 2, fontSize: 15, opacity: busy ? 0.7 : 1 }}
-                            onClick={() => handleConnect(undefined, 'join')}
-                            disabled={busy}>
+                        <button style={{ ...S.btn, background: busy ? '#555' : '#4488ff', flex: 2, fontSize: 15 }}
+                            onClick={() => handleConnect(undefined, 'join')} disabled={busy}>
                             {busy ? '⟳...' : '🚀 انضم'}
                         </button>
                     )}
@@ -508,12 +478,12 @@ export default function OnlineLobby({ uid, playerName, onBack, onMatchFound }: P
 function CodeBox({ label, code, color }: { label: string; code: string; color: string }) {
     const [copied, setCopied] = useState(false);
     return (
-        <div style={{ flex: 1, background: `${color}15`, border: `1px solid ${color}55`, borderRadius: 12, padding: '12px 14px', textAlign: 'center', minWidth: 140 }}>
-            <div style={{ color: 'rgba(255,255,255,0.45)', fontSize: 11, marginBottom: 4 }}>{label}</div>
-            <div style={{ color, fontFamily: 'monospace', fontSize: 13, fontWeight: 700, letterSpacing: 1, wordBreak: 'break-all' }}>{code}</div>
+        <div style={{ flex: 1, background: `${color}12`, border: `1px solid ${color}44`, borderRadius: 12, padding: '14px 14px', textAlign: 'center', minWidth: 140 }}>
+            <div style={{ color: 'rgba(255,255,255,0.45)', fontSize: 11, marginBottom: 6 }}>{label}</div>
+            <div style={{ color, fontFamily: 'monospace', fontSize: 14, fontWeight: 700, letterSpacing: 1, wordBreak: 'break-all' }}>{code}</div>
             <button onClick={() => { navigator.clipboard.writeText(code).catch(() => {}); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
-                style={{ marginTop: 8, padding: '4px 10px', borderRadius: 6, border: 'none', background: color + '33', color: '#fff', fontSize: 11, cursor: 'pointer' }}>
-                {copied ? '✅ تم النسخ' : '📋 نسخ'}
+                style={{ marginTop: 8, padding: '5px 14px', borderRadius: 6, border: 'none', background: color + '33', color: '#fff', fontSize: 11, cursor: 'pointer' }}>
+                {copied ? '✅ تم النسخ' : '📋 نسخ الرمز'}
             </button>
         </div>
     );
@@ -531,30 +501,26 @@ function TeamColumn({ title, players, color, myName, isHost, room }: any) {
     );
 }
 
-function PlayerRow({ player, myName, isHost, room, showTeamSwitch }: { player: PlayerEntry; myName: string; isHost?: boolean; room?: any; showTeamSwitch?: boolean }) {
+function PlayerRow({ player, myName, isHost, room, showTeamSwitch }: any) {
     const isMe = player.name === myName;
-    const canControl = isHost && !isMe && !player.isBot;
+    const canControl = isHost && !isMe;
     return (
         <div style={{
             display: 'flex', alignItems: 'center', gap: 8,
             padding: '6px 10px', borderRadius: 8, marginBottom: 4,
-            background: isMe ? 'rgba(68,255,170,0.12)' : 'rgba(255,255,255,0.04)',
-            border: isMe ? '1px solid rgba(68,255,170,0.3)' : '1px solid transparent',
+            background: isMe ? 'rgba(68,255,170,0.10)' : 'rgba(255,255,255,0.03)',
+            border: isMe ? '1px solid rgba(68,255,170,0.25)' : '1px solid transparent',
         }}>
-            <span style={{ fontSize: 15 }}>{player.isBot ? '🤖' : isMe ? '👤' : '🎮'}</span>
-            <span style={{ flex: 1, fontSize: 13, color: isMe ? '#44ffaa' : player.isBot ? '#ff8833' : '#cdd' }}>{player.name}</span>
+            <span style={{ fontSize: 15 }}>{isMe ? '👤' : '🎮'}</span>
+            <span style={{ flex: 1, fontSize: 13, color: isMe ? '#44ffaa' : '#cdd' }}>{player.name}</span>
             {isMe && <span style={{ fontSize: 10, color: '#44ffaa' }}>أنت</span>}
+            {canControl && showTeamSwitch && (
+                <button onClick={() => room?.send('move_team', { targetId: player.sessionId })}
+                    style={{ padding: '2px 7px', borderRadius: 5, border: 'none', background: 'rgba(100,150,255,0.2)', color: '#88aaff', fontSize: 11, cursor: 'pointer' }}>🔄</button>
+            )}
             {canControl && (
-                <>
-                    {showTeamSwitch && (
-                        <button onClick={() => room?.send('move_team', { targetId: player.sessionId })}
-                            style={{ padding: '2px 7px', borderRadius: 5, border: 'none', background: 'rgba(100,150,255,0.2)', color: '#88aaff', fontSize: 11, cursor: 'pointer' }}
-                            title="نقل الفريق">🔄</button>
-                    )}
-                    <button onClick={() => room?.send('kick_player', { targetId: player.sessionId })}
-                        style={{ padding: '2px 7px', borderRadius: 5, border: 'none', background: 'rgba(255,60,60,0.2)', color: '#ff6666', fontSize: 11, cursor: 'pointer' }}
-                        title="طرد">❌</button>
-                </>
+                <button onClick={() => room?.send('kick_player', { targetId: player.sessionId })}
+                    style={{ padding: '2px 7px', borderRadius: 5, border: 'none', background: 'rgba(255,60,60,0.2)', color: '#ff6666', fontSize: 11, cursor: 'pointer' }}>❌</button>
             )}
         </div>
     );
@@ -571,22 +537,22 @@ const S: Record<string, React.CSSProperties> = {
     card: {
         background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.10)',
         borderRadius: 20, padding: '28px 24px',
-        width: '100%', maxWidth: 580, color: '#fff',
+        width: '100%', maxWidth: 540, color: '#fff',
         backdropFilter: 'blur(12px)', boxShadow: '0 0 60px rgba(0,150,255,0.12)',
         maxHeight: '90vh', overflowY: 'auto',
     },
-    header: { textAlign: 'center', marginBottom: 20 },
+    header: { textAlign: 'center' as const, marginBottom: 20 },
     title: { margin: 0, fontSize: 24, fontWeight: 700 },
     sub: { margin: '4px 0 0', color: 'rgba(255,255,255,0.5)', fontSize: 13 },
     modeRow: { display: 'flex', gap: 10, marginBottom: 18 },
-    modeCard: { flex: 1, borderRadius: 14, padding: '14px 8px', textAlign: 'center', transition: 'all 0.2s' },
+    modeCard: { flex: 1, borderRadius: 14, padding: '14px 8px', textAlign: 'center' as const, transition: 'all 0.2s' },
     modeSub: { color: '#aab', fontSize: 12, margin: '4px 0 2px' },
     modeDesc: { color: 'rgba(255,255,255,0.3)', fontSize: 10, lineHeight: 1.4 },
     input: {
         width: '100%', padding: '10px 14px',
         background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)',
         borderRadius: 10, color: '#fff', fontSize: 15, outline: 'none',
-        boxSizing: 'border-box', textAlign: 'center', letterSpacing: 2,
+        boxSizing: 'border-box' as const, textAlign: 'center' as const, letterSpacing: 2,
         fontFamily: "'Outfit', monospace",
     },
     btnRow: { display: 'flex', gap: 10, marginTop: 4 },
@@ -601,5 +567,4 @@ const S: Record<string, React.CSSProperties> = {
         border: '1px solid rgba(255,255,255,0.06)',
     },
     sectionTitle: { fontWeight: 700, fontSize: 13, marginBottom: 10, color: 'rgba(255,255,255,0.55)' },
-    playerList: { display: 'flex', flexDirection: 'column', gap: 4 },
 };
