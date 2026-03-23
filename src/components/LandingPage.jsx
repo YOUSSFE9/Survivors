@@ -42,10 +42,14 @@ export default function LandingPage({ onStartGame }) {
             setLoading(false);
             return;
         }
-        // Handle redirect result first (mobile Google auth)
-        handleAuthRedirect().finally(() => setLoading(false));
+        // Handle redirect result (mobile Google auth)
+        handleAuthRedirect()
+            .then(() => setLoading(false))
+            .catch(() => setLoading(false));
+
         const unsub = onAuthStateChanged(auth, async (u) => {
             setUser(u);
+            setLoading(false); // Always clear loading when auth state resolves
             if (u) await savePlayerProfile(u);
         });
         return () => unsub();
