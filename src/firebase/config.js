@@ -43,15 +43,25 @@ const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
 /**
- * Sign in with Google — uses redirect on mobile, popup on desktop.
+ * Sign in with Google — tries popup first (works on desktop & many mobiles).
+ * If popup fails (blocked by mobile browser), falls back to redirect.
  */
 export async function signInWithGoogle() {
     if (!auth) return null;
-    if (isMobile()) {
-        await signInWithRedirect(auth, googleProvider);
-        return null; // Page will reload, result handled in getRedirectResult
+    try {
+        // Try popup first — works on desktop and many mobile browsers
+        const result = await signInWithPopup(auth, googleProvider);
+        return result;
+    } catch (e) {
+        console.warn('Popup failed, trying redirect...', e.code);
+        // Fallback to redirect (mobile browsers that block popups)
+        try {
+            await signInWithRedirect(auth, googleProvider);
+        } catch (redirectErr) {
+            console.error('Redirect also failed:', redirectErr);
+        }
+        return null;
     }
-    return await signInWithPopup(auth, googleProvider);
 }
 
 /**
