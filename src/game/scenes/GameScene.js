@@ -12,6 +12,8 @@ import { EconomySystem } from '../systems/EconomySystem';
 import { TrapSystem } from '../systems/TrapSystem';
 import { Pathfinder } from '../systems/Pathfinder';
 import { BotPlayer } from '../entities/BotPlayer';
+import { network as netMgr } from '../multiplayer/NetworkManager';
+
 // OnlineSync is loaded dynamically to avoid bundling Colyseus in offline builds
 let OnlineSync = null;
 
@@ -26,6 +28,12 @@ export class GameScene extends Phaser.Scene {
         this.onlineUid    = this.game.registry.get('uid')        || null;
         this.onlineName   = this.game.registry.get('name')       || 'Player';
         this.onlineSeed   = this.game.registry.get('mazeSeed')   || null; // shared seed from server
+        this.onlineGrid   = this.game.registry.get('mazeGrid')   || null; // generated grid from server
+        this.onlineTrapPositions = this.game.registry.get('trapPositions') || null;
+        // Prize system: Google UID for Firestore daily stat tracking (offline mode only)
+        this._prizeUid  = this.game.registry.get('prizeUid')  || null;
+        this._prizeName = this.game.registry.get('prizeName') || 'Player';
+        this._prizePhoto= this.game.registry.get('prizePhoto')|| '';
     }
 
     create() {
@@ -38,7 +46,19 @@ export class GameScene extends Phaser.Scene {
         const mazeSeed = this.onlineSeed || null;
         if (mazeSeed) {
             // Online: use same algorithm as server for identical maze
-            this.mazeData = MazeGenerator.generateOnline(20, 20, 3, mazeSeed);
+            this.mazeData = MazeGenerator.generateOnline
+                ? MazeGenerator.generateOnline(20, 20, 3, mazeSeed, this.onlineGrid)
+                : (() => {
+                    const mg = new MazeGenerator(20, 20, 3, mazeSeed);
+                    const d = mg.generate();
+                    // Override grid with server-authoritative grid
+                    if (this.onlineGrid) d.grid = this.onlineGrid;
+                    return d;
+                })();
+            // Inject server-authoritative trap positions so TrapSystem works in online mode
+            if (this.onlineTrapPositions?.length) {
+                this.mazeData.trapPositions = this.onlineTrapPositions;
+            }
         } else {
             // Offline: use full recursive backtracker with rooms
             const mazeGen = new MazeGenerator(20, 20, 3);
@@ -100,9 +120,11 @@ export class GameScene extends Phaser.Scene {
         // Collisions
         this._setupCollisions();
 
-        // Launch Wormholes
-        this._spawnWormholes();
-        this.time.addEvent({ delay: 60000, loop: true, callback: () => this._spawnWormholes() });
+        // Launch Wormholes (offline only; online uses server-provided data)
+        if (!this.onlineMode) {
+            this._spawnWormholes();
+            this.time.addEvent({ delay: 60000, loop: true, callback: () => this._spawnWormholes() });
+        }
 
         // Spawn bots only in offline mode
         this.bots = [];
@@ -150,6 +172,31 @@ export class GameScene extends Phaser.Scene {
         });
         this.events.on('inventoryChanged', () => this._emitHUDUpdate());
         this.events.on('healthChanged',    () => this._emitHUDUpdate());
+
+        // Offline-only: initialize daily stats record and listen for portal entry
+        if (!this.onlineMode && this._prizeUid) {
+            // Ensure today's record exists
+            getDailyStats(this._prizeUid, this._prizeName, this._prizePhoto).catch(() => {});
+
+            // Listen for portal entry (playerWon event from KeySystem)
+            this.events.on('playerWon', () => {
+                incrementDailyStat(this._prizeUid, 'portalsOpened', 1).then(() => {
+                    // Check if player reached 10 portals today → award 10 coins
+                    getDailyStats(this._prizeUid, this._prizeName, this._prizePhoto).then(stats => {
+                        if (stats && stats.portalsOpened >= 10) {
+                            // Award 10 coins only if not already awarded today
+                            const ref = fbDoc(firestore, 'daily_awards', `${this._prizeUid}_10portals_${getDailyKey()}`);
+                            fbGetDoc(ref).then(snap => {
+                                if (!snap.exists()) {
+                                    addGoldCoins(this._prizeUid, 10);
+                                    fbSetDoc(ref, { uid: this._prizeUid, awardedAt: serverTimestamp() }).catch(() => {});
+                                }
+                            }).catch(() => addGoldCoins(this._prizeUid, 10));
+                        }
+                    }).catch(() => {});
+                }).catch(() => {});
+            });
+        }
 
         // Launch HUD
         this.scene.launch('HUDScene', { gameScene: this });
@@ -222,11 +269,9 @@ export class GameScene extends Phaser.Scene {
 
         // Online: send local input to server + interpolate remote players
         if (this.onlineMode && this.onlineSync && this.player?.alive) {
-            const vx = this.player.container.body?.velocity?.x || 0;
-            const vy = this.player.container.body?.velocity?.y || 0;
-            const len = Math.sqrt(vx*vx + vy*vy);
-            const dx = len > 0 ? vx/len : 0;
-            const dy = len > 0 ? vy/len : 0;
+            // Use raw input intent (not Phaser velocity which drops to 0 against walls)
+            const dx = this.player.inputDx || 0;
+            const dy = this.player.inputDy || 0;
             this.onlineSync.sendInput(dx, dy, this.player.container.rotation);
             this.onlineSync.update();
         }
@@ -241,7 +286,6 @@ export class GameScene extends Phaser.Scene {
             this.onlineSync = new OSync(this);
 
             // REUSE the existing room from OnlineLobby (stored on network singleton)
-            const { network: netMgr } = await import('../multiplayer/NetworkManager');
             if (netMgr.room) {
                 this.onlineSync.attachRoom(netMgr.room);
                 console.log('[GameScene] Attached to existing room:', netMgr.room.id);
@@ -267,10 +311,22 @@ export class GameScene extends Phaser.Scene {
             }
 
             // Handle game over from server
-            this.onlineSync.onGameOver = ({ winner, killerName, mode: m }) => {
+            this.onlineSync.onGameOver = (data) => {
+                const { winner, killerName, isEliminated } = data;
+
+                if (isEliminated) {
+                    // War: THIS player was eliminated — game continues for others
+                    // Show loss overlay immediately so player can leave
+                    this.events.emit('onlineGameOver', { isWinner: false, killerName, mode: this.onlineMode, isEliminated: true });
+                    this.scene.get('HUDScene')?.events?.emit('showLoss', { name: killerName || 'an enemy', allowReturn: true });
+                    return;
+                }
+
+                // Normal game over (duel, war final result)
                 const isWinner = winner === this.onlineUid ||
-                    (this.onlineTeam && winner === this.onlineTeam);
-                this.events.emit('onlineGameOver', { isWinner, killerName, mode: m });
+                    (this.onlineTeam && winner === this.onlineTeam) ||
+                    winner === this.onlineSync.mySessionId;
+                this.events.emit('onlineGameOver', { isWinner, killerName, mode: this.onlineMode });
                 this.scene.get('HUDScene')?.events?.emit(
                     isWinner ? 'showWin' : 'showLoss',
                     { name: killerName || winner }
@@ -280,6 +336,24 @@ export class GameScene extends Phaser.Scene {
             // Server spawns portal — create local visual + overlap
             this.onlineSync.onPortalSpawned = (pos) => {
                 if (this.keySystem) this.keySystem.forceSpawnPortal(pos.x, pos.y);
+            };
+
+            // Server-synced wormholes
+            if (netMgr.gameStartedData?.wormholes) {
+                this._spawnWormholes(netMgr.gameStartedData.wormholes);
+            }
+
+            // Remote pickup collection sync
+            this.onlineSync.onPickupCollected = (data) => {
+                this._removePickupByIndex(data.pickupIndex);
+            };
+
+            // Remote key collection sync
+            this.onlineSync.onKeyCollected = (data) => {
+                const keyId = data.keyId;
+                if (keyId !== undefined) {
+                    this.keySystem.removeKeyByIndex(keyId);
+                }
             };
 
             console.log('[GameScene] Online mode active:', this.onlineMode);
@@ -311,31 +385,41 @@ export class GameScene extends Phaser.Scene {
     }
 
     // ═══ WORMHOLES (Randomly shifting portals) ═══
-    _spawnWormholes() {
+    _spawnWormholes(serverWormholes = null) {
         if (this.wormholes) {
             this.wormholes.forEach(w => w.container.destroy());
         }
 
-        const colors = [0xff2222, 0x22ff22, 0x2222ff, 0xffff22, 0xff22ff, 0x22ffff, 0xff8822, 0xff2288, 0x88ff22, 0xffffff];
         this.wormholes = [];
         this.availableWormholeExits = [];
+        const ts = this.tileSize;
 
+        if (serverWormholes) {
+            // Online: Use data from server
+            serverWormholes.forEach((w) => {
+                const whX = w.x * ts + ts / 2;
+                const whY = w.y * ts + ts / 2;
+                this._createWormholeVisual(whX, whY, w.color);
+            });
+            return;
+        }
+
+        // Offline: Generate locally
+        const colors = [0xff2222, 0x22ff22, 0x2222ff, 0xffff22, 0xff22ff, 0x22ffff, 0xff8822, 0xff2288, 0x88ff22, 0xffffff];
         const candidates = [];
         const { grid, width, height } = this.mazeData;
-        const ts = this.tileSize;
         
         for (let y = 1; y < height - 1; y++) {
             for (let x = 1; x < width - 1; x++) {
                 if (grid[y][x] === 0) {
                     const isEdge = x < 4 || x > width - 4 || y < 4 || y > height - 4;
                     candidates.push({ x, y });
-                    if (isEdge) candidates.push({ x, y }); // Double probability
+                    if (isEdge) candidates.push({ x, y });
                 }
             }
         }
         
         Phaser.Utils.Array.Shuffle(candidates);
-        
         const selected = [];
         for (const c of candidates) {
             if (!selected.find(s => s.x === c.x && s.y === c.y)) {
@@ -348,30 +432,34 @@ export class GameScene extends Phaser.Scene {
             const whX = pos.x * ts + ts/2;
             const whY = pos.y * ts + ts/2;
             const color = colors[i % colors.length];
-
-            const container = this.add.container(whX, whY).setDepth(4);
-            
-            const outer = this.add.graphics();
-            outer.lineStyle(2, color, 0.9);
-            outer.beginPath();
-            for(let a=0; a<Math.PI*4; a+=0.2) {
-                let r = (a / (Math.PI*4)) * (ts/2);
-                let px = Math.cos(a)*r, py = Math.sin(a)*r;
-                a === 0 ? outer.moveTo(px,py) : outer.lineTo(px,py);
-            }
-            outer.strokePath();
-
-            this.tweens.add({ targets: outer, angle: -360, duration: 1500, repeat: -1, ease: 'Linear' });
-
-            const inner = this.add.circle(0, 0, 6, 0x000000);
-            const glow = this.add.circle(0, 0, ts/2 - 2, color, 0.3);
-            this.tweens.add({ targets: glow, scaleX: 1.3, scaleY: 1.3, alpha: 0.1, duration: 800, yoyo: true, repeat: -1 });
-
-            container.add([glow, outer, inner]);
-            const wh = { x: whX, y: whY, color, container };
-            this.wormholes.push(wh);
-            this.availableWormholeExits.push(wh);
+            this._createWormholeVisual(whX, whY, color);
         });
+    }
+
+    _createWormholeVisual(whX, whY, color) {
+        const ts = this.tileSize;
+        const container = this.add.container(whX, whY).setDepth(4);
+        
+        const outer = this.add.graphics();
+        outer.lineStyle(2, color, 0.9);
+        outer.beginPath();
+        for(let a=0; a<Math.PI*4; a+=0.2) {
+            let r = (a / (Math.PI*4)) * (ts/2);
+            let px = Math.cos(a)*r, py = Math.sin(a)*r;
+            a === 0 ? outer.moveTo(px,py) : outer.lineTo(px,py);
+        }
+        outer.strokePath();
+
+        this.tweens.add({ targets: outer, angle: -360, duration: 1500, repeat: -1, ease: 'Linear' });
+
+        const inner = this.add.circle(0, 0, 6, 0x000000);
+        const glow = this.add.circle(0, 0, ts/2 - 2, color, 0.3);
+        this.tweens.add({ targets: glow, scaleX: 1.3, scaleY: 1.3, alpha: 0.1, duration: 800, yoyo: true, repeat: -1 });
+
+        container.add([glow, outer, inner]);
+        const wh = { x: whX, y: whY, color, container };
+        this.wormholes.push(wh);
+        this.availableWormholeExits.push(wh);
     }
 
     _checkWormholeCollisions(bodyContainer, entityObj) {
@@ -502,6 +590,7 @@ export class GameScene extends Phaser.Scene {
                 pos.x * ts + ts/2, pos.y * ts + ts/2,
                 types[i % types.length]
             );
+            pickup._index = i; // store index for network sync
             this.pickups.push(pickup);
             this._addPickupCollider(pickup);
         });
@@ -516,14 +605,36 @@ export class GameScene extends Phaser.Scene {
                 this.player.receivePickup(type, value);
                 pickup.collect(this.player); // visual flash
                 this.pickups = this.pickups.filter(p => p !== pickup);
+                // Tell server about the collection so other clients also remove it
+                if (this.onlineSync?.room) {
+                    this.onlineSync.room.send('pickup_item', { pickupIndex: pickup._index, type });
+                }
             }
         });
     }
 
+    /** Remove a pickup by index (called from remote pickup_collected event) */
+    _removePickupByIndex(index) {
+        const idx = this.pickups.findIndex(p => p._index === index);
+        if (idx !== -1) {
+            const pickup = this.pickups[idx];
+            pickup._collected = true;
+            pickup.collect(null); // visual flash without applying to player
+            this.pickups.splice(idx, 1);
+        }
+    }
+
     _addKeyCollider(key) {
         this.physics.add.overlap(this.player.container, key, () => {
+            if (this.onlineSync?.room) {
+                this.onlineSync.sendPickupKey(key.getData('index'));
+            }
             this.keySystem.collectKey(this.player, key);
             this._emitHUDUpdate();
+            // Offline-only: track key collection in Firestore leaderboard
+            if (!this.onlineMode && this._prizeUid) {
+                incrementDailyStat(this._prizeUid, 'keysCollected', 1).catch(() => {});
+            }
         });
     }
 
@@ -543,6 +654,10 @@ export class GameScene extends Phaser.Scene {
         this.killCount++;
         this.economy.onAIKill().then(() => this._emitHUDUpdate());
         if (this.waveSpawner) this.waveSpawner.onEnemyKilled();
+        // Offline-only: track monster kills in Firestore daily leaderboard
+        if (!this.onlineMode && this._prizeUid) {
+            incrementDailyStat(this._prizeUid, 'monsterKills', 1).catch(() => {});
+        }
 
         // 40% chance to drop random loot
         if (Math.random() < 0.4) {
@@ -658,6 +773,17 @@ export class GameScene extends Phaser.Scene {
             if (!e.alive) continue;
             const dx = e.container.x - x, dy = e.container.y - y;
             if (Math.sqrt(dx*dx+dy*dy) < r) e.takeDamage(50);
+        }
+        if (this.onlineMode && this.onlineSync) {
+            for (const [sid, rp] of this.onlineSync.remotePlayers.entries()) {
+                if (!rp.alive) continue;
+                const dx = rp.container.x - x, dy = rp.container.y - y;
+                if (Math.sqrt(dx*dx+dy*dy) < r) {
+                    // Similar to bullets, local hit effect only. Server handles real damage via the 'shoot' event if synced.
+                    // Or if grenades aren't synced server-side, we'd need to emit a hit.
+                    // For now, the visual effect is what matters locally.
+                }
+            }
         }
     }
 
@@ -775,12 +901,39 @@ export class GameScene extends Phaser.Scene {
                     this._recycleBullet(b);
                 }
             }
+            if (!b.active) continue;
+            // Remote Players (Online mode)
+            if (this.onlineMode && this.onlineSync) {
+                for (const [sid, rp] of this.onlineSync.remotePlayers.entries()) {
+                    if (!rp.alive) continue;
+                    // Don't hit yourself with your own bullets
+                    if (owner === 'player' && sid === this.onlineSync.mySessionId) continue;
+                    
+                    const dx = b.x - rp.container.x, dy = b.y - rp.container.y;
+                    if (Math.sqrt(dx*dx+dy*dy) < 18) {
+                        // In a fully authoritative server, we'd send a "hit" event.
+                        // Here, because we send 'shoot' to the server, the server calculates hits automatically 
+                        // and broadcasts health updates via state_tick.
+                        // But we CAN show a local hit effect/explosion for responsiveness!
+                        if (b.getData('isExplosive')) {
+                            this._createExplosion(b.x, b.y, b.getData('explosionRadius') || 80);
+                        }
+                        this._recycleBullet(b);
+                        break;
+                    }
+                }
+            }
         }
         // Portal
         if (this.keySystem.portal && this.player?.alive) {
             const dx = this.player.container.x - this.keySystem.portal.x;
             const dy = this.player.container.y - this.keySystem.portal.y;
             if (Math.sqrt(dx*dx+dy*dy) < 30) this.keySystem.enterPortal(this.player);
+        }
+
+        // Wormholes (Offline only - Online handled by server)
+        if (!this.onlineMode && this.player?.alive) {
+            this._checkWormholeCollisions(this.player.container, this.player);
         }
     }
 
@@ -796,6 +949,27 @@ export class GameScene extends Phaser.Scene {
             wave:         this.waveSpawner ? this.waveSpawner.getCurrentWave() : 0,
             kills:        this.killCount,
         });
+    }
+
+    // ═══ MAIN UPDATE LOOP ═══
+    update(time, delta) {
+        if (this.player) {
+            this.player.update(time, delta);
+        }
+
+        if (this.onlineMode && this.onlineSync) {
+            this.onlineSync.update(time, delta);
+        }
+
+        if (this.bots) {
+            for (const bot of this.bots) {
+                if (bot.update) bot.update(time, delta);
+            }
+        }
+
+        for (const enemy of this.enemies) {
+            if (enemy.update) enemy.update(time, delta);
+        }
     }
 
     getMinimapData() {

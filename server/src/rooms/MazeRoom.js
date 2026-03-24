@@ -38,6 +38,7 @@ class MazeRoom extends colyseus.Room {
 
         const seed     = Math.floor(Math.random() * 999999);
         const mazeData = MazeGenerator.generate(20, 20, 3, seed);
+        this.mazeData  = mazeData; // store for wall-collision checks
 
         if (options.mode === 'squad') {
             this.redCode  = this.roomId + '-R';
@@ -189,6 +190,29 @@ class MazeRoom extends colyseus.Room {
 
     // ─────────────── Helpers ───────────────
 
+    /**
+     * Returns true if the world-space rect centred at (wx, wy) with half-size MARGIN
+     * is fully inside walkable tiles (grid === 0).
+     */
+    _isWalkable(wx, wy) {
+        if (!this.mazeData) return true; // no maze yet, allow movement
+        const { grid, width, height, tileSize } = this.mazeData;
+        const MARGIN = 12; // half player body size in pixels
+        const corners = [
+            [wx - MARGIN, wy - MARGIN],
+            [wx + MARGIN, wy - MARGIN],
+            [wx - MARGIN, wy + MARGIN],
+            [wx + MARGIN, wy + MARGIN],
+        ];
+        for (const [px, py] of corners) {
+            const gx = Math.floor(px / tileSize);
+            const gy = Math.floor(py / tileSize);
+            if (gx < 0 || gy < 0 || gx >= width || gy >= height) return false;
+            if (grid[gy][gx] !== 0) return false;
+        }
+        return true;
+    }
+
     _realCount() {
         return Object.values(this.gs.players).filter(p => !p.isBot).length;
     }
@@ -241,12 +265,23 @@ class MazeRoom extends colyseus.Room {
             const dist = Math.sqrt(dx * dx + dy * dy);
             if (dist > 80) {
                 const jx = (Math.random() - 0.5) * 0.2, jy = (Math.random() - 0.5) * 0.2;
-                p.x += ((dx / dist) + jx) * PLAYER_SPEED * 0.85;
-                p.y += ((dy / dist) + jy) * PLAYER_SPEED * 0.85;
+                const spd = PLAYER_SPEED * 0.85;
+                const ldx = (dx / dist) + jx, ldy = (dy / dist) + jy;
+                const bnx = p.x + ldx * spd, bny = p.y + ldy * spd;
+                // Wall-collision with sliding for bots
+                if (this._isWalkable(bnx, bny)) {
+                    p.x = bnx; p.y = bny;
+                } else if (this._isWalkable(bnx, p.y)) {
+                    p.x = bnx;
+                } else if (this._isWalkable(p.x, bny)) {
+                    p.y = bny;
+                }
             }
             p.rotation = Math.atan2(dy, dx);
-            p.x = Math.max(16, Math.min(p.x, this.monsterAI.worldW || 2000));
-            p.y = Math.max(16, Math.min(p.y, this.monsterAI.worldH || 2000));
+            const ww = this.monsterAI.worldW || 2000;
+            const wh = this.monsterAI.worldH || 2000;
+            p.x = Math.max(16, Math.min(p.x, ww - 16));
+            p.y = Math.max(16, Math.min(p.y, wh - 16));
             p._shootCooldown = (p._shootCooldown || 0) - 1;
             if (p._shootCooldown <= 0 && dist < 380) {
                 const noise = (Math.random() - 0.5) * 0.25;
@@ -329,11 +364,21 @@ class MazeRoom extends colyseus.Room {
             if (!p || !p.alive || p.isBot) continue;
             const len = Math.sqrt(input.dx * input.dx + input.dy * input.dy);
             if (len > 0.01) {
-                p.x += (input.dx / len) * PLAYER_SPEED;
-                p.y += (input.dy / len) * PLAYER_SPEED;
+                const nx = p.x + (input.dx / len) * PLAYER_SPEED;
+                const ny = p.y + (input.dy / len) * PLAYER_SPEED;
+                // Wall-collision with sliding
+                if (this._isWalkable(nx, ny)) {
+                    p.x = nx; p.y = ny;
+                } else if (this._isWalkable(nx, p.y)) {
+                    p.x = nx;
+                } else if (this._isWalkable(p.x, ny)) {
+                    p.y = ny;
+                }
                 p.rotation = input.rotation;
-                p.x = Math.max(16, Math.min(p.x, this.monsterAI.worldW || 2000));
-                p.y = Math.max(16, Math.min(p.y, this.monsterAI.worldH || 2000));
+                const ww = this.monsterAI.worldW || 2000;
+                const wh = this.monsterAI.worldH || 2000;
+                p.x = Math.max(16, Math.min(p.x, ww - 16));
+                p.y = Math.max(16, Math.min(p.y, wh - 16));
             }
         }
 

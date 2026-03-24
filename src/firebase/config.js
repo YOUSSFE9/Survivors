@@ -108,3 +108,97 @@ export async function savePlayerProfile(user) {
 
 export { app, auth, firestore, firebaseEnabled, googleProvider };
 export { signInAnonymously, onAuthStateChanged, signInWithPopup, signOut, doc, getDoc, setDoc, updateDoc, increment, serverTimestamp };
+export { getFirestore };
+
+// ═══════════════════════════════════════════
+//  PRIZES ECONOMY — Gold Coins + Leaderboards
+// ═══════════════════════════════════════════
+import { collection, getDocs, query, orderBy, limit, writeBatch, where } from 'firebase/firestore';
+export { collection, getDocs, query, orderBy, limit, writeBatch, where };
+
+/** Returns today's UTC date string: "2026-03-24" */
+export function getDailyKey() {
+    return new Date().toISOString().slice(0, 10);
+}
+
+/** Get or initialise a player's daily stats doc */
+export async function getDailyStats(uid, displayName, photoURL) {
+    if (!firebaseEnabled || !firestore || !uid) return null;
+    const day = getDailyKey();
+    const ref = doc(firestore, 'daily_stats', `${uid}_${day}`);
+    try {
+        const snap = await getDoc(ref);
+        if (!snap.exists()) {
+            const fresh = { uid, displayName: displayName || 'Survivor', photoURL: photoURL || '', day, monsterKills: 0, portalsOpened: 0, keysCollected: 0 };
+            await setDoc(ref, fresh);
+            return fresh;
+        }
+        return snap.data();
+    } catch (e) { console.warn('[Prizes] getDailyStats error', e); return null; }
+}
+
+/** Increment a daily stat field and check if player earns gold */
+export async function incrementDailyStat(uid, field, amount = 1) {
+    if (!firebaseEnabled || !firestore || !uid) return;
+    const day = getDailyKey();
+    const ref = doc(firestore, 'daily_stats', `${uid}_${day}`);
+    try {
+        await updateDoc(ref, { [field]: increment(amount) });
+    } catch {
+        // Doc may not exist yet — create it first
+        await getDailyStats(uid, '', '');
+        await updateDoc(ref, { [field]: increment(amount) });
+    }
+}
+
+/** Add gold coins to a player's permanent balance */
+export async function addGoldCoins(uid, amount) {
+    if (!firebaseEnabled || !firestore || !uid || amount <= 0) return;
+    const ref = doc(firestore, 'players', uid);
+    try {
+        await updateDoc(ref, { goldCoins: increment(amount), [`goldHistory.${getDailyKey()}`]: increment(amount) });
+    } catch (e) { console.warn('[Prizes] addGoldCoins error', e); }
+}
+
+/** Fetch leaderboard data for today */
+export async function fetchLeaderboard(rankType) {
+    if (!firebaseEnabled || !firestore) return [];
+    const day = getDailyKey();
+    // rankType: 'monsterKills' | 'portalsOpened'
+    const secondary = rankType === 'portalsOpened' ? 'keysCollected' : null;
+    try {
+        const q = query(
+            collection(firestore, 'daily_stats'),
+            where('day', '==', day),
+            orderBy(rankType, 'desc'),
+            ...(secondary ? [orderBy(secondary, 'desc')] : []),
+            limit(20)
+        );
+        const snap = await getDocs(q);
+        return snap.docs.map((d, i) => ({ rank: i + 1, ...d.data() }));
+    } catch (e) {
+        console.warn('[Prizes] fetchLeaderboard error', e);
+        return [];
+    }
+}
+
+/** Get a player's total gold coin balance */
+export async function getGoldBalance(uid) {
+    if (!firebaseEnabled || !firestore || !uid) return 0;
+    try {
+        const snap = await getDoc(doc(firestore, 'players', uid));
+        return snap.data()?.goldCoins || 0;
+    } catch { return 0; }
+}
+
+/** Award gold to the daily top killer/survivor (called from server or post-game) */
+export async function awardDailyWinner(uid, coinsAmount, reason) {
+    if (!uid) return;
+    await addGoldCoins(uid, coinsAmount);
+    // Log the award
+    if (firebaseEnabled && firestore) {
+        const day = getDailyKey();
+        const ref = doc(firestore, 'daily_awards', `${uid}_${day}_${reason}`);
+        await setDoc(ref, { uid, day, reason, coins: coinsAmount, awardedAt: serverTimestamp() }, { merge: true });
+    }
+}

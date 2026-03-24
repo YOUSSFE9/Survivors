@@ -107,20 +107,41 @@ export class KeySystem {
         }
 
         if (this.collectedCount >= this.totalKeys && !this.portalSpawned) {
-            this.spawnPortal();
+            // In online mode, the server triggers portal spawning
+            if (!this.scene.onlineMode) {
+                this.spawnPortal();
+            }
         }
 
         return this.collectedCount;
+    }
+
+    removeKeyByIndex(index) {
+        const key = this.keys.find(k => k.getData('index') === index);
+        if (key) {
+            this.collectedCount++;
+            key.destroy();
+            this.keys = this.keys.filter(k => k !== key);
+        }
     }
 
     spawnPortal() {
         const mazeData = this.scene.mazeData;
         if (!mazeData) return;
 
-        const floor = mazeData.rooms[Math.floor(Math.random() * mazeData.rooms.length)];
+        const floor = mazeData.rooms && mazeData.rooms.length > 0 
+            ? mazeData.rooms[Math.floor(Math.random() * mazeData.rooms.length)]
+            : { x: mazeData.width/2, y: mazeData.height/2, w: 2, h: 2 };
+
         const tileSize = this.scene.tileSize;
         const px = (floor.x + floor.w / 2) * tileSize;
         const py = (floor.y + floor.h / 2) * tileSize;
+
+        this.forceSpawnPortal(px, py);
+    }
+
+    forceSpawnPortal(px, py) {
+        if (this.portalSpawned) return;
 
         this.portal = this.scene.add.container(px, py);
 
@@ -137,41 +158,25 @@ export class KeySystem {
         this.portal.body.setImmovable(true);
 
         // Rotation animation
-        this.scene.tweens.add({
-            targets: outerRing,
-            angle: 360,
-            duration: 3000,
-            repeat: -1,
-        });
-
-        this.scene.tweens.add({
-            targets: innerRing,
-            angle: -360,
-            duration: 2000,
-            repeat: -1,
-        });
-
-        this.scene.tweens.add({
-            targets: core,
-            scaleX: 1.3,
-            scaleY: 1.3,
-            alpha: 0.5,
-            duration: 800,
-            yoyo: true,
-            repeat: -1,
-        });
+        this.scene.tweens.add({ targets: outerRing, angle: 360, duration: 3000, repeat: -1 });
+        this.scene.tweens.add({ targets: innerRing, angle: -360, duration: 2000, repeat: -1 });
+        this.scene.tweens.add({ targets: core, scaleX: 1.3, scaleY: 1.3, alpha: 0.5, duration: 800, yoyo: true, repeat: -1 });
 
         this.portalSpawned = true;
-
-        // Emit event
         this.scene.events.emit('portalSpawned', { x: px, y: py });
     }
 
     enterPortal(player) {
         if (!this.portal || this.collectedCount < this.totalKeys) return false;
 
-        this.scene.cameras.main.fade(1000, 255, 255, 255);
-        this.scene.events.emit('playerWon');
+        if (this.scene.onlineMode && this.scene.onlineSync) {
+            this.scene.onlineSync.sendEnterPortal();
+            // HUD feedback
+            this.scene.cameras.main.flash(500, 200, 255, 200);
+        } else {
+            this.scene.cameras.main.fade(1000, 255, 255, 255);
+            this.scene.events.emit('playerWon');
+        }
         return true;
     }
 

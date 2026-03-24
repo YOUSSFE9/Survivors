@@ -241,10 +241,18 @@
 
 /* Buttons */
 .button-group {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  margin-bottom: 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    margin-bottom: 24px;
+    width: 100%;
+}
+
+.online-modes-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    width: 100%;
 }
 
 .btn {
@@ -303,6 +311,59 @@
   opacity: 0.5;
   cursor: not-allowed;
   transform: none;
+}
+
+/* Specific Online Mode Colors */
+.btn-duel {
+    background: linear-gradient(135deg, #3d0a10 0%, #5a1219 100%);
+    border: 1px solid rgba(255, 68, 85, 0.3);
+}
+.btn-duel:hover {
+    background: linear-gradient(135deg, #500d15 0%, #7a1020 100%);
+    border-color: rgba(255, 68, 85, 0.7);
+    box-shadow: 0 8px 25px rgba(255, 68, 85, 0.2);
+}
+
+.btn-squad {
+    background: linear-gradient(135deg, #0a123d 0%, #121d5a 100%);
+    border: 1px solid rgba(68, 136, 255, 0.3);
+}
+.btn-squad:hover {
+    background: linear-gradient(135deg, #0d1a50 0%, #1a3a7a 100%);
+    border-color: rgba(68, 136, 255, 0.7);
+    box-shadow: 0 8px 25px rgba(68, 136, 255, 0.2);
+}
+
+.btn-war {
+    background: linear-gradient(135deg, #3d200a 0%, #5a3012 100%);
+    border: 1px solid rgba(255, 136, 51, 0.3);
+}
+.btn-war:hover {
+    background: linear-gradient(135deg, #502a0d 0%, #7a401a 100%);
+    border-color: rgba(255, 136, 51, 0.7);
+    box-shadow: 0 8px 25px rgba(255, 136, 51, 0.2);
+}
+
+.online-modes-grid .btn {
+    flex-direction: column;
+    padding: 16px 8px;
+    gap: 8px;
+    text-align: center;
+}
+
+.online-modes-grid .btn-icon {
+    margin: 0;
+    font-size: 1.8rem;
+}
+
+.online-modes-grid .btn-text {
+    text-align: center;
+    align-items: center;
+}
+
+.online-modes-grid .btn-desc {
+    font-size: 0.65rem;
+    opacity: 0.7;
 }
 
 .btn-icon {
@@ -413,4 +474,12 @@
   .title-maze { font-size: 0.9rem; letter-spacing: 14px; }
   .info-cards { flex-direction: column; align-items: center; }
   .btn { padding: 14px 18px; }
+  .online-modes-grid {
+      grid-template-columns: 1fr;
+  }
+}
+
+@keyframes prizePulse {
+  0%, 100% { box-shadow: 0 0 16px rgba(255,215,0,0.15); }
+  50%       { box-shadow: 0 0 30px rgba(255,215,0,0.38), 0 0 6px rgba(255,215,0,0.6); }
 }

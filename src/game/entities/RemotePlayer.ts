@@ -42,7 +42,7 @@ export class RemotePlayer {
         this.targetY = y;
 
         this.sprite = scene.add.image(0, 0, 'player')
-            .setDisplaySize(36, 36)
+            .setDisplaySize(32, 32)
             .setTint(tint);
 
         this.weaponSprite = scene.add.image(14, 2, 'weapon_m4')
@@ -67,15 +67,16 @@ export class RemotePlayer {
     }
 
     /** Called with data from server state patch. */
-    applyState(data: { x: number; y: number; rotation: number; health: number; alive: boolean; weapon?: string }) {
-        this.targetX   = data.x;
-        this.targetY   = data.y;
-        this.targetRot = data.rotation;
-        this.health    = data.health;
-        this.alive     = data.alive;
+    applyState(data: any) {
+        if (typeof data.x === 'number')        this.targetX   = data.x;
+        if (typeof data.y === 'number')        this.targetY   = data.y;
+        if (typeof data.rotation === 'number') this.targetRot = data.rotation;
+        if (typeof data.health === 'number')   this.health    = data.health;
 
-        if (!data.alive) {
-            this.container.setAlpha(0);
+        // Only change alive if explicitly set (undefined means "no change")
+        if (typeof data.alive === 'boolean') {
+            this.alive = data.alive;
+            this.container.setAlpha(data.alive ? 1 : 0);
         }
 
         // Weapon sprite
@@ -83,8 +84,6 @@ export class RemotePlayer {
             this.weaponSprite.setTexture('weapon_bazooka');
         } else if (data.weapon === 'M4') {
             this.weaponSprite.setTexture('weapon_m4');
-        } else {
-            this.weaponSprite.setVisible(false);
         }
     }
 

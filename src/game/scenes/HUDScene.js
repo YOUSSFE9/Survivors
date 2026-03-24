@@ -475,18 +475,20 @@ export class HUDScene extends Phaser.Scene {
             fontFamily: 'Outfit,sans-serif', fontSize: `${16*S}px`, color: '#ff5555', fontStyle: 'bold'
         }).setOrigin(0.5);
 
-        // Continue button (shown only once)
+        // Continue button (shown only in offline mode, once)
         this._cBtn = this._createButton(W/2, H/2, 180*S, 40*S, '⚔️', 'أكمل القتال', 'يتابع في مكان آمن', 0x2266ff, () => this._onContinue());
-        // Retry button — position changes depending on whether continue is visible
-        this._rBtn = this._createButton(W/2, H/2 + 55*S, 180*S, 40*S, '🔄', 'أعد المحاولة', 'معركة جديدة', 0xbb2233, () => this._onRetry());
+        // Retry button
+        this._rBtn = this._createButton(W/2, H/2 + 55*S, 180*S, 40*S, '🔄', 'أعد المحاولة', 'العودة للحياة', 0xbb2233, () => this._onRetry());
         this._deathTitle = title;
 
         this._deathOverlay.add([bg, panel, title, this._cBtn, this._rBtn]);
     }
 
     _showDeathOverlay() {
-        // If continue was already used, hide the continue button and center the retry
-        if (this._continueUsed) {
+        const isOnline = !!this.gameScene?.onlineMode;
+        
+        // In online mode, we only show "Retry" (which will trigger a server respawn)
+        if (isOnline || this._continueUsed) {
             this._cBtn.setVisible(false);
             this._rBtn.setPosition(this.W/2, this.H/2 + 20*this.S);
         } else {
@@ -540,6 +542,15 @@ export class HUDScene extends Phaser.Scene {
     }
 
     _onRetry() {
+        // If we are online, we don't hard reset the scenes. We just request a respawn.
+        if (this.gameScene?.onlineMode) {
+            this._hideDeathOverlay();
+            if (this.gameScene.onlineSync) {
+                this.gameScene.onlineSync.room.send('request_respawn');
+            }
+            return;
+        }
+
         this._hideDeathOverlay();
         this.cameras.main.fadeOut(300, 0, 0, 0);
         this.time.delayedCall(300, () => {
@@ -566,6 +577,7 @@ export class HUDScene extends Phaser.Scene {
             this._buildDynamicSidebar(this.gameScene.player?._getInventoryState(), keys);
         });
         this.gameScene.events.on('playerDied', () => this._showDeathOverlay());
+        this.gameScene.events.on('playerRespawned', () => this._hideDeathOverlay());
         this.gameScene.events.on('playerWon',  () => this._showWinOverlay());
         this.gameScene.events.on('botWon',      d  => this._showBotWinOverlay(d?.name || 'منافس مجهول'));
     }

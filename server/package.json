@@ -1,15 +1,16 @@
 {
   "name": "daht-server",
-  "version": "1.0.0",
-  "description": "DAHT multiplayer server (Colyseus + Node.js)",
+  "version": "2.0.0",
+  "description": "DAHT multiplayer server (Socket.IO + Node.js)",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js"
   },
   "dependencies": {
-    "colyseus": "^0.15.0",
     "cors": "^2.8.5",
-    "express": "^4.18.2"
+    "express": "^4.18.2",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3"
   }
 }

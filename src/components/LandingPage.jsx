@@ -4,8 +4,11 @@ import {
     onAuthStateChanged, signInWithGoogle, handleAuthRedirect, signOut
 } from '../firebase/config';
 import { enterGameFullscreen } from '../utils/mobileUtils';
-import OnlineLobby from './OnlineLobby';
+import DuelLobby from './DuelLobby';
+import SquadLobby from './SquadLobby';
+import WarLobby from './WarLobby';
 import SettingsModal from './SettingsModal';
+import PrizesModal from './PrizesModal';
 import T, { getSavedLang } from '../i18n/translations';
 import './LandingPage.css';
 
@@ -13,9 +16,10 @@ export default function LandingPage({ onStartGame }) {
     const [user, setUser] = useState(null);
     const [loading, setLoading] = useState(true); // start true to handle redirect
     const [stars, setStars] = useState([]);
-    const [showLobby, setShowLobby] = useState(false);
+    const [lobbyMode, setLobbyMode] = useState(null); // 'duel' | 'squad' | 'war' | null
     const [lang, setLang] = useState(getSavedLang());
     const [status, setStatus] = useState('');
+    const [showPrizes, setShowPrizes] = useState(false);
 
     const t = T[lang] || T['ar'];
 
@@ -73,30 +77,38 @@ export default function LandingPage({ onStartGame }) {
 
     const handlePlayOffline = () => {
         enterGameFullscreen();
-        onStartGame('offline');
+        if (user) {
+            onStartGame('offline', {
+                prizeUid: user.uid,
+                prizeName: user.displayName,
+                prizePhoto: user.photoURL
+            });
+        } else {
+            onStartGame('offline');
+        }
     };
 
-    const handlePlayOnline = () => {
+    const handlePlayOnline = (m) => {
         if (!user) {
             setStatus('⚠️ يجب تسجيل الدخول بحساب Google للعب أونلاين');
             setTimeout(() => setStatus(''), 4000);
             return;
         }
         enterGameFullscreen();
-        setShowLobby(true);
+        setLobbyMode(m);
     };
 
-    if (showLobby) {
-        return (
-            <OnlineLobby
-                uid={user?.uid || `guest_${Date.now()}`}
-                playerName={user?.displayName || `Player_${Math.floor(Math.random() * 9999)}`}
-                avatarUrl={user?.photoURL || ''}
-                onMatchFound={({ mode, roomId, mazeSeed }) => onStartGame('online', { onlineMode: mode, roomId, mazeSeed })}
-                onBack={() => setShowLobby(false)}
-            />
-        );
-    }
+    const lobbyProps = {
+        uid: user?.uid || `guest_${Date.now()}`,
+        playerName: user?.displayName || `Player_${Math.floor(Math.random() * 9999)}`,
+        avatarUrl: user?.photoURL || '',
+        onMatchFound: ({ mode, roomId, mazeSeed, mazeGrid }) => onStartGame('online', { onlineMode: mode, roomId, mazeSeed, mazeGrid }),
+        onBack: () => setLobbyMode(null)
+    };
+
+    if (lobbyMode === 'duel')  return <DuelLobby  {...lobbyProps} />;
+    if (lobbyMode === 'squad') return <SquadLobby {...lobbyProps} />;
+    if (lobbyMode === 'war')   return <WarLobby   {...lobbyProps} />;
 
     return (
         <div className="landing-page">
@@ -153,13 +165,32 @@ export default function LandingPage({ onStartGame }) {
                 {firebaseEnabled && (
                     <div className="auth-section">
                         {user ? (
-                            <div className="user-profile">
-                                {user.photoURL && (
-                                    <img src={user.photoURL} alt="avatar" className="user-avatar" />
-                                )}
-                                <div className="user-info">
-                                    <span className="user-name">👋 {user.displayName || 'Survivor'}</span>
-                                    <button className="btn-signout" onClick={handleSignOut}>Sign Out</button>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center' }}>
+                                {/* Prizes Button */}
+                                <button
+                                    onClick={() => setShowPrizes(true)}
+                                    style={{
+                                        display: 'flex', alignItems: 'center', gap: 8,
+                                        padding: '9px 20px', borderRadius: 12,
+                                        border: '1px solid rgba(255,215,0,0.4)',
+                                        background: 'linear-gradient(135deg,rgba(255,215,0,0.12),rgba(255,165,0,0.08))',
+                                        color: '#ffd700', fontWeight: 800, fontSize: 14,
+                                        cursor: 'pointer', width: '100%', justifyContent: 'center',
+                                        boxShadow: '0 0 20px rgba(255,215,0,0.15)',
+                                        animation: 'prizePulse 2.5s ease-in-out infinite',
+                                    }}
+                                    id="btn-prizes"
+                                >
+                                    🏆 جوائز المحترفين
+                                </button>
+                                <div className="user-profile">
+                                    {user.photoURL && (
+                                        <img src={user.photoURL} alt="avatar" className="user-avatar" />
+                                    )}
+                                    <div className="user-info">
+                                        <span className="user-name">👋 {user.displayName || 'Survivor'}</span>
+                                        <button className="btn-signout" onClick={handleSignOut}>Sign Out</button>
+                                    </div>
                                 </div>
                             </div>
                         ) : (
@@ -182,31 +213,42 @@ export default function LandingPage({ onStartGame }) {
                 )}
 
                 {/* Game mode buttons */}
-                <div className="button-group">
+                <div className="button-group main-modes">
                     <button
                         className="btn btn-offline"
                         onClick={handlePlayOffline}
                         id="btn-play-offline"
                     >
-                        <span className="btn-icon">🎮</span>
-                        <span className="btn-text">
-                            <span className="btn-label">{t.playOffline}</span>
-                            <span className="btn-desc">{t.surviveWaves}</span>
-                        </span>
+                        <div className="btn-icon">🕹️</div>
+                        <div className="btn-text">
+                            <div className="btn-label">{t.playOffline}</div>
+                            <div className="btn-desc">{t.surviveWaves}</div>
+                        </div>
                     </button>
 
-                    <button
-                        className="btn btn-online"
-                        onClick={handlePlayOnline}
-                        disabled={loading}
-                        id="btn-play-online"
-                    >
-                        <span className="btn-icon">🌐</span>
-                        <span className="btn-text">
-                            <span className="btn-label">{loading ? t.connecting : t.playOnline}</span>
-                            <span className="btn-desc">{t.pvpDesc}</span>
-                        </span>
-                    </button>
+                    <div className="online-modes-grid">
+                        <button className="btn btn-online btn-duel" onClick={() => handlePlayOnline('duel')}>
+                            <div className="btn-icon">⚔️</div>
+                            <div className="btn-text">
+                                <div className="btn-label">{t.duel}</div>
+                                <div className="btn-desc">{t.duelSub}</div>
+                            </div>
+                        </button>
+                        <button className="btn btn-online btn-squad" onClick={() => handlePlayOnline('squad')}>
+                            <div className="btn-icon">🛡️</div>
+                            <div className="btn-text">
+                                <div className="btn-label">{t.squad}</div>
+                                <div className="btn-desc">{t.squadSub}</div>
+                            </div>
+                        </button>
+                        <button className="btn btn-online btn-war" onClick={() => handlePlayOnline('war')}>
+                            <div className="btn-icon">💀</div>
+                            <div className="btn-text">
+                                <div className="btn-label">{t.war}</div>
+                                <div className="btn-desc">{t.warSub}</div>
+                            </div>
+                        </button>
+                    </div>
                 </div>
 
                 {/* Status */}
@@ -248,6 +290,11 @@ export default function LandingPage({ onStartGame }) {
                     <span>1/2</span> {t.switchWeapon}
                 </div>
             </div>
+
+            {/* Prizes Modal */}
+            {showPrizes && (
+                <PrizesModal user={user} onClose={() => setShowPrizes(false)} />
+            )}
         </div>
     );
 }

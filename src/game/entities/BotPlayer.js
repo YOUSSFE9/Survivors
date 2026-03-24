@@ -48,8 +48,7 @@ export class BotPlayer {
 
         // Physics — same as Player
         scene.physics.world.enable(this.container);
-        this.container.body.setSize(22, 22);
-        this.container.body.setOffset(-11, -11);
+        this.container.body.setCircle(17, -17, -17);
         this.container.body.setCollideWorldBounds(true);
         this.container.body.setDrag(900);
         this.container.body.setMaxVelocity(this.speed);
@@ -75,7 +74,7 @@ export class BotPlayer {
 
     _buildVisuals() {
         this.container.removeAll(true);
-        this.sprite = this.scene.add.image(0, 0, 'player').setDisplaySize(36, 36);
+        this.sprite = this.scene.add.image(0, 0, 'player').setDisplaySize(32, 32);
         this.sprite.setTint(this.tint);
         this.weaponSprite = this.scene.add.image(14, 2, 'weapon_m4');
         this.weaponSprite.setScale(0.65).setOrigin(0.1, 0.5).setTint(this.tint);

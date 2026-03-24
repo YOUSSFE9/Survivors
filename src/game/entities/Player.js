@@ -12,6 +12,8 @@ export class Player {
         this.maxHealth = 100;
         this.health = this.maxHealth;
         this.speed = 180;
+        this.inputDx  = 0; // exposed for server input relay
+        this.inputDy  = 0;
         this.alive = true;
         this.keysCollected = 0;
         this.kills = 0;
@@ -40,8 +42,7 @@ export class Player {
 
         // Physics
         scene.physics.world.enable(this.container);
-        this.container.body.setSize(22, 22);
-        this.container.body.setOffset(-11, -11);
+        this.container.body.setCircle(17, -17, -17); // Circle hitbox for sliding and 1px gap
         this.container.body.setCollideWorldBounds(true);
         this.container.body.setDrag(900);
         this.container.body.setMaxVelocity(this.speed);
@@ -78,7 +79,7 @@ export class Player {
         if (this.weaponSprite) { this.weaponSprite.destroy(); this.weaponSprite = null; }
 
         this.playerSprite = this.scene.add.image(0, 0, 'player');
-        this.playerSprite.setDisplaySize(36, 36);
+        this.playerSprite.setDisplaySize(32, 32);
         this.container.add(this.playerSprite);
 
         // Only draw weapon if one is equipped
@@ -137,11 +138,20 @@ export class Player {
         // 3. APPLY MOVEMENT
         if (vx !== 0 || vy !== 0) {
             const len = Math.sqrt(vx * vx + vy * vy);
-            body.setVelocity((vx/len) * this.speed, (vy/len) * this.speed);
+            this.inputDx = vx / len;
+            this.inputDy = vy / len;
+            body.setVelocity(this.inputDx * this.speed, this.inputDy * this.speed);
             this.playerSprite.y = Math.sin(time * 0.012) * 1.5;
         } else {
+            this.inputDx = 0;
+            this.inputDy = 0;
             body.setVelocity(0, 0);
             this.playerSprite.y = 0;
+        }
+
+        // Send input to server
+        if (this.scene.onlineSync) {
+            this.scene.onlineSync.sendInput(this.inputDx, this.inputDy, this.container.rotation);
         }
 
         // 4. WEAPON FIRING
@@ -278,6 +288,15 @@ export class Player {
                 targets: flash, alpha: 0, scaleX: 2.5, scaleY: 2.5,
                 duration: 80, onComplete: () => flash.destroy(),
             });
+
+            // Send shoot to server
+            if (this.scene.onlineSync) {
+                const bvx = Math.cos(angle) * (wc.muzzleLen > 30 ? 650 : 800);
+                const bvy = Math.sin(angle) * (wc.muzzleLen > 30 ? 650 : 800);
+                const dmg = wc.muzzleLen > 30 ? 60 : 35; // Bazooka vs M4 damage
+                const isExplosive = wc.muzzleLen > 30;
+                this.scene.onlineSync.sendShoot(bvx, bvy, dmg, isExplosive);
+            }
         }
     }
 
@@ -470,15 +489,26 @@ export class Player {
         this.container.body.setVelocity(0, 0);
         this.container.body.enable = false;
         this.scene.events.emit('playerDied');
-        this.scene.time.delayedCall(3000, () => this.respawn());
+        
+        // In online mode, the server tells us when to respawn.
+        if (!this.scene.onlineMode) {
+            this.scene.time.delayedCall(3000, () => this.respawn());
+        }
     }
 
     respawn() {
         const spawn = this.scene.mazeData?.playerSpawn;
         const ts = this.scene.tileSize;
-        if (spawn) this.container.setPosition(spawn.x * ts + ts/2, spawn.y * ts + ts/2);
+        if (!this.scene.onlineMode && spawn) {
+            this.container.setPosition(spawn.x * ts + ts/2, spawn.y * ts + ts/2);
+        }
+        // If online, position is updated by Server state_tick override!
+        
         this.health = this.maxHealth;
         this.alive = true;
+        this.keysCollected = 0; // Reset keys on death
+        this.scene.events.emit('keysChanged', this.keysCollected);
+        
         this.container.setAlpha(1);
         this.container.body.enable = true;
         this.scene.events.emit('healthChanged', this.health);
