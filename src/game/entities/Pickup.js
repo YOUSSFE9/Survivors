@@ -39,7 +39,7 @@ export class Pickup {
         });
     }
 
-    collect(player) {
+    collect() {
         // Collect flash — logic is handled in GameScene via Player.receivePickup
         this.scene.tweens.add({
             targets: this.container,

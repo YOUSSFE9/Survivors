@@ -19,6 +19,7 @@ export class Player {
         this.kills = 0;
         this.breachMode = false;
         this.shootLockUntil = 0; // prevent auto-fire after weapon switch
+        this.pendingFireUntil = 0; // short fire buffer so quick taps are never lost
 
         // INVENTORY: starts completely empty
         this.inventory = {
@@ -92,7 +93,7 @@ export class Player {
         }
     }
 
-    update(time, delta) {
+    update(time) {
         if (!this.alive || !this.isLocal) return;
 
         const body = this.container.body;
@@ -159,7 +160,9 @@ export class Player {
         const isMouseFiring = isDesktop && this.scene.input.activePointer.isDown;
         const isFireActive = isMouseFiring || isSpaceDown || fireAim.active;
 
+        const nowTs = Date.now();
         if (this.currentWeapon === 'BAZOOKA') {
+            this.pendingFireUntil = 0;
             if (isFireActive && !this.bazookaAimActive) {
                 this.bazookaAimActive = true;
                 this.startBazookaAim();
@@ -172,8 +175,17 @@ export class Player {
             if (this.bazookaAimActive) {
                 this.updateBazookaAim(aimAngle);
             }
-        } else if (this.currentWeapon && isFireActive) {
-            this.shoot();
+        } else if (this.currentWeapon) {
+            const fireRate = WEAPONS[this.currentWeapon]?.fireRate || 120;
+            const fireBufferMs = Math.max(fireRate + 90, 180);
+            if (isFireActive) this.pendingFireUntil = nowTs + fireBufferMs;
+
+            if (nowTs <= this.pendingFireUntil) {
+                const fired = this.shoot();
+                if (fired) this.pendingFireUntil = 0;
+            }
+        } else {
+            this.pendingFireUntil = 0;
         }
 
         // 5. GRENADE TRAJECTORY & THROW
@@ -232,6 +244,7 @@ export class Player {
         if (!this.inventory[key] || !this.inventory[key].owned) return;
         this.currentWeapon = key;
         this.shootLockUntil = Date.now() + 300;
+        this.pendingFireUntil = 0;
         this._drawSprite();
         
         // Reset Bazooka aiming
@@ -244,18 +257,19 @@ export class Player {
     }
 
     shoot() {
-        if (!this.alive || !this.currentWeapon) return;
-        if (Date.now() < this.shootLockUntil) return; // locked after switch
+        if (!this.alive || !this.currentWeapon) return false;
+        if (Date.now() < this.shootLockUntil) return false; // locked after switch
         const inv = this.inventory[this.currentWeapon];
-        if (!inv || inv.ammo <= 0) return;
-        if (!this.weaponSystem.canFire(this.currentWeapon)) return;
+        if (!inv || inv.ammo <= 0) return false;
+        if (!this.weaponSystem.canFire(this.currentWeapon)) return false;
 
         const angle = this.container.rotation;
         const wc = this.weaponConfigs[this.currentWeapon];
-        if (!wc) return;
+        if (!wc) return false;
 
-        const muzzleX = this.container.x + Math.cos(angle) * wc.muzzleLen;
-        const muzzleY = this.container.y + Math.sin(angle) * wc.muzzleLen;
+        // Precise muzzle position accounting for forward length AND vertical offset
+        const muzzleX = this.container.x + Math.cos(angle) * wc.muzzleLen - Math.sin(angle) * wc.offsetY;
+        const muzzleY = this.container.y + Math.sin(angle) * wc.muzzleLen + Math.cos(angle) * wc.offsetY;
 
         const bullet = this.weaponSystem.fire(this.currentWeapon, muzzleX, muzzleY, angle);
         if (bullet) {
@@ -297,7 +311,9 @@ export class Player {
                 const isExplosive = wc.muzzleLen > 30;
                 this.scene.onlineSync.sendShoot(bvx, bvy, dmg, isExplosive);
             }
+            return true;
         }
+        return false;
     }
 
     startGrenadeAim() {
@@ -349,12 +365,13 @@ export class Player {
         const wc = this.weaponConfigs['BAZOOKA'];
         if (!wc) return;
         
-        const startX = this.container.x + Math.cos(angle) * wc.muzzleLen;
-        const startY = this.container.y + Math.sin(angle) * wc.muzzleLen;
+        const startX = this.container.x + Math.cos(angle) * wc.muzzleLen - Math.sin(angle) * wc.offsetY;
+        const startY = this.container.y + Math.sin(angle) * wc.muzzleLen + Math.cos(angle) * wc.offsetY;
         
         const maxDist = 800; // Screen length laser
         
-        this.bazookaLine.lineStyle(2, 0xff3300, 0.6);
+        this.bazookaLine.lineStyle(2, 0xff0000, 0.85); // High-visibility red
+        this.bazookaLine.setAlpha(1.0);
         this.bazookaLine.beginPath();
         
         // Dashed line
@@ -474,7 +491,6 @@ export class Player {
     takeDamage(amount) {
         if (!this.alive) return;
         this.health -= amount;
-        this.scene.cameras.main.shake(100, 0.005);
         if (this.playerSprite) {
             this.playerSprite.setTint(0xff4444);
             this.scene.time.delayedCall(130, () => { if (this.playerSprite) this.playerSprite.clearTint(); });
@@ -490,10 +506,7 @@ export class Player {
         this.container.body.enable = false;
         this.scene.events.emit('playerDied');
         
-        // In online mode, the server tells us when to respawn.
-        if (!this.scene.onlineMode) {
-            this.scene.time.delayedCall(3000, () => this.respawn());
-        }
+        // Removed auto-respawn. The game now waits for the Retry button in HUDScene.
     }
 
     respawn() {

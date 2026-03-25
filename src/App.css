@@ -46,6 +46,18 @@ body,
   background: #0a0e27;
 }
 
+.game-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #aaccff;
+  font-size: 1rem;
+  letter-spacing: 0.04em;
+  background: radial-gradient(circle at 50% 45%, rgba(24, 34, 72, 0.9), rgba(6, 8, 26, 0.95));
+}
+
 /* Back button overlay */
 .back-button {
   position: absolute;
@@ -64,6 +76,11 @@ body,
   transition: all 0.2s ease;
   letter-spacing: 1px;
   backdrop-filter: blur(6px);
+}
+
+.app-root[dir="rtl"] .back-button {
+  left: auto;
+  right: 12px;
 }
 
 .back-button:hover {

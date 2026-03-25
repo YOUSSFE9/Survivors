@@ -6,7 +6,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import {
     db, firebaseEnabled,
-    ref, set, onValue, onDisconnect, remove, get, update, push, serverTimestamp
+    ref, set, onValue, onDisconnect, remove, get, update, serverTimestamp
 } from '../../firebase/config';
 
 const MAX_PLAYERS = 20;

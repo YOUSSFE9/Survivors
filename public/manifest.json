@@ -1,12 +1,14 @@
 {
-  "name": "Space Station Maze",
-  "short_name": "SS Maze",
-  "description": "Top-Down Survival Shooter — Fight zombies, collect weapons, escape the maze!",
-  "start_url": "/",
-  "display": "fullscreen",
-  "orientation": "landscape",
+  "id": "/",
+  "name": "DAHT Survival Shooter",
+  "short_name": "DAHT",
+  "description": "Top-down survival shooter with offline and online modes.",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
   "background_color": "#060a1c",
   "theme_color": "#0a0e27",
+  "orientation": "landscape",
   "lang": "ar",
   "icons": [
     {
@@ -22,6 +24,5 @@
       "purpose": "any maskable"
     }
   ],
-  "categories": ["games", "entertainment"],
-  "screenshots": []
+  "categories": ["games", "entertainment"]
 }

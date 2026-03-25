@@ -302,7 +302,7 @@ export class BotPlayer {
 
         const ang = Math.atan2(aimY - by, aimX - bx);
         const bullet = this.scene.createBullet(bx, by,
-            Math.cos(ang)*spd, Math.sin(ang)*spd, this.damage, false, 0, 'BOT');
+            Math.cos(ang)*spd, Math.sin(ang)*spd, this.damage, false, 0);
         if (bullet) bullet.setData('owner', 'bot_' + this.index);
 
         // Muzzle flash

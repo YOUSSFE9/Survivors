@@ -10,9 +10,10 @@ interface Props {
     avatarUrl?: string;
     onMatchFound: (info: { mode: string; roomId: string; mazeSeed?: number; mazeGrid?: any[]; trapPositions?: any[] }) => void;
     onBack: () => void;
+    t: any;
 }
 
-export default function DuelLobby({ uid, playerName, avatarUrl = '', onBack, onMatchFound }: Props) {
+export default function DuelLobby({ uid, playerName, avatarUrl = '', onBack, onMatchFound, t }: Props) {
     const [duelFlow, setDuelFlow] = useState<DuelFlow>('none');
     const [joinCode, setJoinCode] = useState('');
     const [status, setStatus] = useState('');
@@ -50,35 +51,35 @@ export default function DuelLobby({ uid, playerName, avatarUrl = '', onBack, onM
     const handleConnect = async (flow: DuelFlow) => {
         if (busy) return;
         setBusy(true);
-        setStatus('جارِ الاتصال...');
+        setStatus(t.connecting);
         try {
             network.connect();
             if (flow === 'random') {
                 const room = await network.joinOrCreate('duel', { uid, name: playerName, avatarUrl });
-                setStatus('🔍 جارِ البحث عن خصم...');
+                setStatus(t.searching);
                 setWaiting(true); setBusy(false);
                 listenRoom(room);
-                let t = 0; setSearchElapsed(0);
+                let searchSec = 0; setSearchElapsed(0);
                 searchTimerRef.current = setInterval(() => {
-                    t++; setSearchElapsed(t);
-                    if (t >= 15) { clearInterval(searchTimerRef.current); searchTimerRef.current = null; }
+                    searchSec++; setSearchElapsed(searchSec);
+                    if (searchSec >= 15) { clearInterval(searchTimerRef.current); searchTimerRef.current = null; }
                 }, 1000);
             } else if (flow === 'create') {
                 const { room, roomId: rid } = await network.createPrivateRoom('duel', { uid, name: playerName, avatarUrl });
-                setRoomCode(rid); setStatus('انتظار صديقك...');
+                setRoomCode(rid); setStatus(t.lbWaitFriend);
                 setWaiting(true); setBusy(false);
                 listenRoom(room);
             } else if (flow === 'join') {
                 const code = joinCode.trim();
-                if (!code) { setStatus('⚠️ أدخل رمز الغرفة'); setBusy(false); return; }
+                if (!code) { setStatus(t.enterCodeFirst); setBusy(false); return; }
                 const room = await network.joinOrCreate('duel', { uid, name: playerName, avatarUrl, roomCode: code });
-                setStatus('تم الانضمام!');
+                setStatus(t.joined);
                 setWaiting(true); setBusy(false);
                 listenRoom(room);
             }
         } catch (e) {
             console.error('[DuelLobby]', e);
-            setStatus('❌ فشل الاتصال');
+            setStatus(t.connError);
             setBusy(false);
         }
     };
@@ -103,23 +104,23 @@ export default function DuelLobby({ uid, playerName, avatarUrl = '', onBack, onM
             <div style={S.overlay}>
                 <div style={{ ...S.card, textAlign: 'center', maxWidth: 420 }}>
                     <div style={{ fontSize: 64, marginBottom: 12 }}>{isWin ? '🏆' : '💀'}</div>
-                    <h2 style={{ margin: '0 0 8px', fontSize: 28, color: isWin ? '#44ffaa' : '#ff4455' }}>{isWin ? 'فزت!' : 'خسرت!'}</h2>
+                    <h2 style={{ margin: '0 0 8px', fontSize: 28, color: isWin ? '#44ffaa' : '#ff4455' }}>{isWin ? t.lbYouWin : t.lbYouLose}</h2>
                     {gameOver.stats && (
                         <div style={S.statsBox}>
                             <div style={{ display: 'flex', justifyContent: 'space-around', alignItems: 'center' }}>
                                 <div>
-                                    <div style={S.statsLabel}>قتلت الخصم</div>
-                                    <div style={{ fontSize: 24, color: '#44ffaa', fontWeight: 'bold' }}>{myKills} <span style={{ fontSize: 14 }}>مرات</span></div>
+                                    <div style={S.statsLabel}>{t.lbKillsOpponent}</div>
+                                    <div style={{ fontSize: 24, color: '#44ffaa', fontWeight: 'bold' }}>{myKills} <span style={{ fontSize: 14 }}>{t.lbTimes}</span></div>
                                 </div>
                                 <div style={{ width: 1, height: 40, background: 'rgba(255,255,255,0.1)' }} />
                                 <div>
-                                    <div style={S.statsLabel}>قتلك الخصم</div>
-                                    <div style={{ fontSize: 24, color: '#ff4455', fontWeight: 'bold' }}>{myDeaths} <span style={{ fontSize: 14 }}>مرات</span></div>
+                                    <div style={S.statsLabel}>{t.lbDeathsOpponent}</div>
+                                    <div style={{ fontSize: 24, color: '#ff4455', fontWeight: 'bold' }}>{myDeaths} <span style={{ fontSize: 14 }}>{t.lbTimes}</span></div>
                                 </div>
                             </div>
                         </div>
                     )}
-                    <button style={{ ...S.btn, background: '#1a3a5a', width: '100%' }} onClick={onBack}>← العودة للقائمة</button>
+                    <button style={{ ...S.btn, background: '#1a3a5a', width: '100%' }} onClick={onBack}>← {t.back}</button>
                 </div>
             </div>
         );
@@ -130,7 +131,7 @@ export default function DuelLobby({ uid, playerName, avatarUrl = '', onBack, onM
         return (
             <div style={S.overlay}>
                 <div style={{ ...S.card, textAlign: 'center', maxWidth: 420 }}>
-                    <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)', marginBottom: 16 }}>تم العثور على خصم!</div>
+                    <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)', marginBottom: 16 }}>{t.lbOpponentFound}</div>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 20, marginBottom: 24 }}>
                         <PlayerCard name={p1?.name || playerName} avatarUrl={p1?.avatarUrl} highlight />
                         <div style={{ fontSize: 28, color: '#ff4455', fontWeight: 900 }}>⚔️</div>
@@ -148,7 +149,7 @@ export default function DuelLobby({ uid, playerName, avatarUrl = '', onBack, onM
                 <div style={S.card}>
                     <div style={S.header}>
                         <div style={{ fontSize: 36 }}>⚔️</div>
-                        <h2 style={{ margin: '8px 0 4px', fontSize: 20 }}>مبارزة أونلاين</h2>
+                        <h2 style={{ margin: '8px 0 4px', fontSize: 20 }}>{t.lbDuelTitle}</h2>
                         <p style={S.sub}>{status}</p>
                     </div>
                     {duelFlow === 'random' && (
@@ -156,22 +157,22 @@ export default function DuelLobby({ uid, playerName, avatarUrl = '', onBack, onM
                             <div style={{ background: 'rgba(255,255,255,0.06)', borderRadius: 10, height: 6, overflow: 'hidden' }}>
                                 <div style={{ height: '100%', background: '#44ffaa', width: `${Math.min((searchElapsed/15)*100, 100)}%`, transition: 'width 1s linear' }} />
                             </div>
-                            <div style={{ marginTop: 6, fontSize: 22, color: 'rgba(255,255,255,0.6)' }}>{searchElapsed}s</div>
+                            <div style={{ marginTop: 6, fontSize: 22, color: 'rgba(255,255,255,0.6)' }}>{searchElapsed} {t.seconds}</div>
                         </div>
                     )}
-                    {roomCode && <CodeBox label="🔗 رمز الغرفة" code={roomCode} color="#44ffaa" />}
+                    {roomCode && <CodeBox label={t.lbRoomCodeLabel} code={roomCode} color="#44ffaa" t={t} />}
                     <div style={S.playerSection}>
-                        <div style={S.sectionTitle}>اللاعبون ({players.length}/2)</div>
+                        <div style={S.sectionTitle}>{t.players} ({players.length}/2)</div>
                         {players.map(p => (
                             <div key={p.sessionId} style={S.playerRow}>
                                 <span>{p.name === playerName ? '👤' : '🎮'}</span>
-                                <span style={{ flex: 1 }}>{p.name} {p.name === playerName && '(أنت)'}</span>
+                                <span style={{ flex: 1 }}>{p.name} {p.name === playerName && `(${t.you})`}</span>
                             </div>
                         ))}
                     </div>
-                    <button style={{ ...S.btn, background: '#222', width: '100%', marginTop: 16 }} onClick={handleLeave}>← مغادرة / رجوع</button>
+                    <button style={{ ...S.btn, background: '#222', width: '100%', marginTop: 16 }} onClick={handleLeave}>{t.lbLeaveBack}</button>
                     <div style={{ color: '#ff4444', fontSize: 13, textAlign: 'center', marginTop: 12, fontWeight: 'bold' }}>
-                        ⚠️ هذا الوضع غير مكتمل لأنه مازال قيد التطوير. مسابقات الجوائز متاحة في وضع الأوفلاين فقط.
+                        {t.lbWipWarning}
                     </div>
                 </div>
             </div>
@@ -179,34 +180,37 @@ export default function DuelLobby({ uid, playerName, avatarUrl = '', onBack, onM
     }
 
     return (
-        <div style={S.overlay}>
+        <div style={{ ...S.overlay, direction: t.dir || 'rtl' }}>
             <div style={S.card}>
                 <div style={S.header}>
-                    <h1 style={{ margin: 0, fontSize: 24 }}>⚔️ وضع المبارزة</h1>
-                    <p style={S.sub}>نافس خصماً واحداً وجهاً لوجه</p>
+                    <h1 style={{ margin: 0, fontSize: 24 }}>⚔️ {t.lbDuelTitle}</h1>
+                    <p style={S.sub}>{t.lbDuelDesc}</p>
                 </div>
                 {duelFlow === 'none' && (
                     <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
-                        <button style={{ ...S.btn, background: '#7a1020', flex: 1 }} onClick={() => { setDuelFlow('random'); handleConnect('random'); }}>🎲 عشوائي</button>
-                        <button style={{ ...S.btn, background: '#1a3a5a', flex: 1 }} onClick={() => setDuelFlow('create')}>👥 تحدي صديق</button>
+                        <button style={{ ...S.btn, background: '#7a1020', flex: 1 }} onClick={() => { setDuelFlow('random'); handleConnect('random'); }}>{t.lbRandom}</button>
+                        <button style={{ ...S.btn, background: '#1a3a5a', flex: 1 }} onClick={() => setDuelFlow('create')}>{t.lbChallengeFriend}</button>
                     </div>
                 )}
                 {duelFlow === 'create' && (
                     <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
-                        <button style={{ ...S.btn, background: '#1a5a2a', flex: 1 }} onClick={() => handleConnect('create')}>➕ إنشاء غرفة</button>
-                        <button style={{ ...S.btn, background: '#1a2a5a', flex: 1 }} onClick={() => setDuelFlow('join')}>🔗 إدخال رمز</button>
+                        <button style={{ ...S.btn, background: '#1a5a2a', flex: 1 }} onClick={() => handleConnect('create')}>{t.lbCreateRoom}</button>
+                        <button style={{ ...S.btn, background: '#1a2a5a', flex: 1 }} onClick={() => setDuelFlow('join')}>{t.lbJoinCode}</button>
                     </div>
                 )}
                 {duelFlow === 'join' && (
                     <div style={{ marginBottom: 14 }}>
-                        <input style={S.input} placeholder="أدخل رمز الغرفة..." value={joinCode} onChange={e => setJoinCode(e.target.value)} maxLength={30} autoFocus />
+                        <input style={S.input} placeholder={t.lbRoomCodePlaceholder} value={joinCode} onChange={e => setJoinCode(e.target.value)} maxLength={30} autoFocus />
                     </div>
                 )}
                 <div style={S.btnRow}>
-                    <button style={{ ...S.btn, background: '#333', flex: 1 }} onClick={onBack}>← رجوع</button>
+                    <button style={{ ...S.btn, background: '#333', flex: 1 }} onClick={onBack}>{t.back}</button>
                     {duelFlow === 'join' && (
-                        <button style={{ ...S.btn, background: '#ff4455', flex: 2 }} onClick={() => handleConnect('join')} disabled={busy}>🚀 انضم</button>
+                        <button style={{ ...S.btn, background: '#ff4455', flex: 2 }} onClick={() => handleConnect('join')} disabled={busy}>{t.lbJoinBtn}</button>
                     )}
+                </div>
+                <div style={{ color: '#ff4444', fontSize: 13, textAlign: 'center', marginTop: 20, fontWeight: 'bold' }}>
+                    {t.lbWipWarning}
                 </div>
             </div>
         </div>
@@ -214,7 +218,7 @@ export default function DuelLobby({ uid, playerName, avatarUrl = '', onBack, onM
 }
 
 const S: any = {
-    overlay: { position:'fixed', inset:0, background:'radial-gradient(ellipse at center,#0a0e27 0%,#000 100%)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:9999, direction:'rtl' },
+    overlay: { position:'fixed', inset:0, background:'radial-gradient(ellipse at center,#0a0e27 0%,#000 100%)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:9999 },
     card: { background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.10)', borderRadius:20, padding:'28px 24px', width:'100%', maxWidth:540, color:'#fff', backdropFilter:'blur(12px)', maxHeight:'90vh', overflowY:'auto' },
     header: { textAlign:'center', marginBottom:20 },
     sub: { margin:'4px 0 0', color:'rgba(255,255,255,0.5)', fontSize:13 },
@@ -228,7 +232,7 @@ const S: any = {
     statsLabel: { fontSize: 13, color: 'rgba(255,255,255,0.5)', marginBottom: 4 }
 };
 
-function CodeBox({ label, code, color }: any) {
+function CodeBox({ label, code, color, t }: any) {
     const [copied, setCopied] = useState(false);
     return (
         <div style={{ background: `${color}12`, border: `1px solid ${color}44`, borderRadius: 12, padding: '14px', textAlign: 'center', marginBottom: 12 }}>
@@ -236,7 +240,7 @@ function CodeBox({ label, code, color }: any) {
             <div style={{ color, fontFamily: 'monospace', fontSize: 13, fontWeight: 700 }}>{code}</div>
             <button onClick={() => { navigator.clipboard.writeText(code); setCopied(true); setTimeout(()=>setCopied(false), 2000); }}
                 style={{ marginTop: 8, padding: '4px 12px', borderRadius: 6, border: 'none', background: color + '33', color: '#fff', fontSize: 11, cursor: 'pointer' }}>
-                {copied ? '✅ تم' : '📋 نسخ'}
+                {copied ? `✅ ${t.copied}` : `📋 ${t.copy}`}
             </button>
         </div>
     );

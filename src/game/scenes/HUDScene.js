@@ -8,22 +8,35 @@
 import Phaser from 'phaser';
 import { pwaInstallManager } from '../../utils/mobileUtils';
 
-const LEGEND = [
-    { color: 0x44ddff, label: 'اللاعب (أنت)' },
-    { color: 0xff3333, label: 'الأعداء' },
-    { color: 0xffd700, label: 'المفاتيح' },
-    { color: 0x44cc66, label: 'نقاط الصحة' },
-    { color: 0xffaa00, label: 'الذخيرة / الأسلحة' },
-    { color: 0xff88ff, label: 'القنابل' },
-    { color: 0x00ff88, label: 'البوابة / المخرج' },
-    { color: 0x111111, label: 'الجدران' },
-    { color: 0xffffff, label: 'الثقوب الناقلة' },
-];
+
 
 export class HUDScene extends Phaser.Scene {
     constructor() { super({ key: 'HUDScene' }); }
+    
+    // Ad constant
+    AD_LINK = 'https://www.profitablecpmratenetwork.com/p2ybm20z?key=8fe9acbc0946c1a99e52506c962ae649';
 
-    init(data) { this.gameScene = data.gameScene; }
+
+    init(data) {
+        this.gameScene = data.gameScene;
+        this.t = this.registry.get('t');
+
+        // Listen for translation changes to refresh the HUD
+        if (this._onTranslationChanged) {
+            this.registry.events.off('setdata-t', this._onTranslationChanged);
+        }
+        this._onTranslationChanged = (parent, value) => {
+            this.t = value;
+            this.scene.restart();
+        };
+        this.registry.events.on('setdata-t', this._onTranslationChanged);
+        this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+            if (this._onTranslationChanged) {
+                this.registry.events.off('setdata-t', this._onTranslationChanged);
+                this._onTranslationChanged = null;
+            }
+        });
+    }
 
     create() {
         this.W = this.cameras.main.width;
@@ -48,6 +61,28 @@ export class HUDScene extends Phaser.Scene {
 
         this._setupEvents();
         this._scheduleInstallPrompt();
+
+        // Ad State
+        this._lastAdTick = Date.now();
+        this._adStep = parseInt(localStorage.getItem('daht_ad_step') || '1');
+        this._adTimer = parseInt(localStorage.getItem('daht_ad_timer') || '0');
+        this._adWaiting = localStorage.getItem('daht_ad_waiting') === 'true';
+    }
+
+    update() {
+        // Ad timer logic (synced with LandingPage style)
+        if (this._adWaiting && this._adTimer > 0) {
+            const now = Date.now();
+            if (now - this._lastAdTick >= 1000) {
+                // Only count time if user is NOT looking at this tab
+                if (!document.hasFocus() || document.hidden) {
+                    this._adTimer = Math.max(0, this._adTimer - 1);
+                    localStorage.setItem('daht_ad_timer', this._adTimer.toString());
+                    this._updateAdButtonState();
+                }
+                this._lastAdTick = now;
+            }
+        }
     }
 
     // ═══════════════════════════════════════════
@@ -188,9 +223,11 @@ export class HUDScene extends Phaser.Scene {
 
         // Wave (top-right, sleek badge)
         const wvW = 60*S, wvH = 20*S;
-        const wvX = this.W - wvW - 8*S, wvY = 8*S;
+        const isRtl = this.t.dir === 'rtl';
+        const wvX = isRtl ? 8*S : this.W - wvW - 8*S;
+        const wvY = 8*S;
         this._createUIPanel(wvX, wvY, wvW, wvH, 0xcc4400, 0xff8800, 0.8).setDepth(199);
-        this.waveText = this.add.text(wvX + wvW/2, wvY + wvH/2, 'WAVE 1', {
+        this.waveText = this.add.text(wvX + wvW/2, wvY + wvH/2, `${this.t.hudWave} 1`, {
             fontFamily: 'Outfit,sans-serif', fontSize: `${10*S}px`, color: '#ffffff', fontStyle: 'bold'
         }).setOrigin(0.5).setScrollFactor(0).setDepth(200);
     }
@@ -219,7 +256,7 @@ export class HUDScene extends Phaser.Scene {
 
         // Health Packs (Manual Use)
         if (inventory.healthPacks > 0) {
-            const btn = this._createButton(x, y + btnH/2, btnW, btnH, '💊', 'علاج', `×${inventory.healthPacks}`, 0x44cc66, () => {
+            const btn = this._createButton(x, y + btnH/2, btnW, btnH, '💊', this.t.heal, `×${inventory.healthPacks}`, 0x44cc66, () => {
                 this.gameScene?.player?.useHealthPack();
             });
             this._sidebarGroup.push(btn);
@@ -230,7 +267,7 @@ export class HUDScene extends Phaser.Scene {
         if (keysCount > 0) {
             const pl = this.gameScene?.player;
             const isBreach = pl && pl.breachMode;
-            const btn = this._createButton(x, y + btnH/2, btnW, btnH, '🧱', 'جدار مفخخ', 'BREACH', 0xcc33cc, () => {
+            const btn = this._createButton(x, y + btnH/2, btnW, btnH, '🧱', this.t.breachWall, 'BREACH', 0xcc33cc, () => {
                 if (pl) {
                     pl.breachMode = !pl.breachMode;
                     this.gameScene.events.emit('breachModeChanged', pl.breachMode);
@@ -248,10 +285,13 @@ export class HUDScene extends Phaser.Scene {
         const W = this.W, H = this.H, S = this.S;
 
         // ─ Smooth Joystick Base ─
-        const joyR = 48*S;
+        const joyR = 42*S;
         const joyX = joyR + 16*S, joyY = H - joyR - 16*S;
         this._joyCenter = { x: joyX, y: joyY };
-        this._joyMax = joyR * 0.85;
+        this._joyMax = joyR * 0.80;   // slightly wider travel for precision
+        this._joyGain = 1.15;          // small gain so edges register full speed fast
+        this._joySmooth = 1.0;         // 1.0 = instant (no lag). Lower = smoother but slower.
+        this._joyDeadzone = 2.0 * S;   // very small deadzone keeps idle still
         this._joy = { active: false, ptId: -1, x: 0, y: 0 };
 
         const joyGfx = this.add.graphics().setScrollFactor(0).setDepth(198);
@@ -278,7 +318,7 @@ export class HUDScene extends Phaser.Scene {
 
         this.input.on('pointerdown', (ptr) => {
             const d2 = (ptr.x - joyX)**2 + (ptr.y - joyY)**2;
-            if (!this._joy.active && d2 < (joyR * 2.5)**2) {
+            if (!this._joy.active && d2 < (joyR * 2.3)**2) {
                 this._joy.active = true; this._joy.ptId = ptr.id;
                 this._updateJoyFromPtr(ptr);
                 drawKnob(true);
@@ -334,7 +374,7 @@ export class HUDScene extends Phaser.Scene {
         };
 
         const fIcon = this.add.text(fireX, fireY - 6*S, '🔥', { fontSize: `${20*S}px` }).setOrigin(0.5).setScrollFactor(0).setDepth(200);
-        const fTxt = this.add.text(fireX, fireY + 16*S, 'FIRE', { fontFamily: 'Outfit,sans-serif', fontSize: `${9*S}px`, color: '#ffffff', fontStyle: 'bold' }).setOrigin(0.5).setScrollFactor(0).setDepth(200);
+        const fTxt = this.add.text(fireX, fireY + 16*S, this.t.fire, { fontFamily: 'Outfit,sans-serif', fontSize: `${9*S}px`, color: '#ffffff', fontStyle: 'bold' }).setOrigin(0.5).setScrollFactor(0).setDepth(200);
         drawFireBtn(false);
 
         const updateFireJoy = (ptr) => {
@@ -386,7 +426,7 @@ export class HUDScene extends Phaser.Scene {
             gTxt.setPosition(this._grnKnob.x, this._grnKnob.y + 12*S);
         };
         const gIcon = this.add.text(grnX, grnY - 4*S, '💣', { fontSize: `${14*S}px` }).setOrigin(0.5).setScrollFactor(0).setDepth(200);
-        const gTxt = this.add.text(grnX, grnY + 12*S, 'THROW', { fontFamily: 'Outfit,sans-serif', fontSize: `${7*S}px`, color: '#ccffcc', fontStyle: 'bold' }).setOrigin(0.5).setScrollFactor(0).setDepth(200);
+        const gTxt = this.add.text(grnX, grnY + 12*S, this.t.throw, { fontFamily: 'Outfit,sans-serif', fontSize: `${7*S}px`, color: '#ccffcc', fontStyle: 'bold' }).setOrigin(0.5).setScrollFactor(0).setDepth(200);
         drawGrn(false);
 
         const updateGrnJoy = (ptr) => {
@@ -444,10 +484,37 @@ export class HUDScene extends Phaser.Scene {
     _updateJoyFromPtr(ptr) {
         let dx = ptr.x - this._joyCenter.x, dy = ptr.y - this._joyCenter.y;
         const d = Math.sqrt(dx*dx + dy*dy);
-        if (d > this._joyMax) { dx = (dx/d)*this._joyMax; dy = (dy/d)*this._joyMax; }
-        
-        this._joyKnob.setPosition(this._joyCenter.x + dx, this._joyCenter.y + dy); 
-        this._joy.x = dx / this._joyMax; this._joy.y = dy / this._joyMax;
+
+        // 1. Deadzone check (on real distance, before clamping)
+        if (d < (this._joyDeadzone || 0)) {
+            this._joy.x = 0;
+            this._joy.y = 0;
+            this._joyKnob.setPosition(this._joyCenter.x, this._joyCenter.y);
+            return;
+        }
+
+        // 2. Clamp to max travel radius
+        const clamped = Math.min(d, this._joyMax);
+        const nx_raw = (dx / d) * clamped / this._joyMax;
+        const ny_raw = (dy / d) * clamped / this._joyMax;
+
+        // 3. Apply mild gain and clamp to [-1, 1]
+        const gain = this._joyGain || 1;
+        const nx = Phaser.Math.Clamp(nx_raw * gain, -1, 1);
+        const ny = Phaser.Math.Clamp(ny_raw * gain, -1, 1);
+
+        // 4. Smooth lerp (1.0 = instant response, <1 adds lag)
+        const smooth = this._joySmooth || 1;
+        this._joy.x = Phaser.Math.Linear(this._joy.x, nx, smooth);
+        this._joy.y = Phaser.Math.Linear(this._joy.y, ny, smooth);
+
+        // 5. Move the visual knob to match the clamped travel
+        const knobDx = (dx / d) * Math.min(d, this._joyMax);
+        const knobDy = (dy / d) * Math.min(d, this._joyMax);
+        this._joyKnob.setPosition(
+            this._joyCenter.x + knobDx,
+            this._joyCenter.y + knobDy
+        );
     }
 
     getJoystickVector()  { return { x: this._joy?.x || 0, y: this._joy?.y || 0 }; }
@@ -465,40 +532,62 @@ export class HUDScene extends Phaser.Scene {
         const W = this.W, H = this.H, S = this.S;
         this._deathOverlay = this.add.container(0, 0).setScrollFactor(0).setDepth(300).setVisible(false);
 
-        // Glassmorphism background
+        // Background
         const bg = this.add.rectangle(W/2, H/2, W, H, 0x000000, 0.85).setInteractive();
 
-        const pW = Math.min(320*S, W - 40), pH = 220*S;
+        const pW = Math.min(320*S, W - 40), pH = 180*S;
         const panel = this._createUIPanel(W/2 - pW/2, H/2 - pH/2, pW, pH, 0x0a0c1a, 0xff4444, 0.95);
 
-        const title = this.add.text(W/2, H/2 - 70*S, '⚠️ لقد فشلت في الهروب', {
+        const title = this.add.text(W/2, H/2 - 55*S, this.t.hudYouLost || '❌ Game Over', {
             fontFamily: 'Outfit,sans-serif', fontSize: `${16*S}px`, color: '#ff5555', fontStyle: 'bold'
         }).setOrigin(0.5);
 
-        // Continue button (shown only in offline mode, once)
-        this._cBtn = this._createButton(W/2, H/2, 180*S, 40*S, '⚔️', 'أكمل القتال', 'يتابع في مكان آمن', 0x2266ff, () => this._onContinue());
-        // Retry button
-        this._rBtn = this._createButton(W/2, H/2 + 55*S, 180*S, 40*S, '🔄', 'أعد المحاولة', 'العودة للحياة', 0xbb2233, () => this._onRetry());
+        // Only Retry button — resets entire game
+        this._rBtn = this._createButton(W/2, H/2 + 20*S, 200*S, 44*S, '🔄', this.t.hudRetry || 'Retry', this.t.hudBackToLife || 'Full Reset', 0xbb2233, () => this._onRetry());
         this._deathTitle = title;
 
-        this._deathOverlay.add([bg, panel, title, this._cBtn, this._rBtn]);
+        const adMsg = this.add.text(W/2, H/2 + 65*S, this.t.adMessage, {
+            fontFamily: 'Outfit,sans-serif', fontSize: `${7*S}px`, color: '#aaaaaa',
+            align: 'center', wordWrap: { width: pW - 20 }
+        }).setOrigin(0.5);
+
+        this._deathOverlay.add([bg, panel, title, adMsg, this._rBtn]);
+    }
+
+    _updateAdButtonState() {
+        if (!this._rBtn) return;
+        let label = this.t.hudRetry || 'Retry';
+        let sub = this.t.hudBackToLife || 'Full Reset';
+
+        if (this._adStep === 1 || this._adStep === 2) {
+            label = `${this.t.hudRetry} (${this._adStep})`;
+        } else if (this._adStep === 3) {
+            if (this._adWaiting && this._adTimer > 0) {
+                label = this.t.adWait ? this.t.adWait.replace('{s}', this._adTimer) : `Wait ${this._adTimer}s...`;
+            } else if (this._adWaiting && this._adTimer === 0) {
+                label = this.t.adReady || 'Play Now';
+            } else {
+                label = this.t.adWatchBtn || 'Watch Ad to Play';
+            }
+        }
+        
+        this._rBtn.updateState(sub, this._adWaiting && this._adTimer === 0);
+        // Container structure: [bg (0), icon (1), text (2), subtext (3), hit (4)]
+        const labelTxt = this._rBtn.list[2];
+        if (labelTxt) labelTxt.setText(label);
     }
 
     _showDeathOverlay() {
-        const isOnline = !!this.gameScene?.onlineMode;
-        
-        // In online mode, we only show "Retry" (which will trigger a server respawn)
-        if (isOnline || this._continueUsed) {
-            this._cBtn.setVisible(false);
-            this._rBtn.setPosition(this.W/2, this.H/2 + 20*this.S);
-        } else {
-            this._cBtn.setVisible(true);
-            this._rBtn.setPosition(this.W/2, this.H/2 + 55*this.S);
-        }
+        // Sync states before showing
+        this._adStep = parseInt(localStorage.getItem('daht_ad_step') || '1');
+        this._adTimer = parseInt(localStorage.getItem('daht_ad_timer') || '0');
+        this._adWaiting = localStorage.getItem('daht_ad_waiting') === 'true';
+        this._updateAdButtonState();
+
         this._deathOverlay.setVisible(true).setAlpha(0);
         this.tweens.add({ targets: this._deathOverlay, alpha: 1, duration: 400, ease: 'Power2' });
 
-        // Show install banner on first death (delay so death overlay finishes appearing first)
+        // Show install banner on first death
         if (this._installOnDeath && !this._installShown) {
             this.time.delayedCall(800, () => this._showInstallBanner());
         }
@@ -542,6 +631,32 @@ export class HUDScene extends Phaser.Scene {
     }
 
     _onRetry() {
+        // Ad Logic
+        if (this._adStep === 1 || this._adStep === 2) {
+            this._adStep = (this._adStep === 1) ? 2 : 3;
+            localStorage.setItem('daht_ad_step', this._adStep.toString());
+        } else if (this._adStep === 3) {
+            if (!this._adWaiting) {
+                window.open(this.AD_LINK, '_blank');
+                this._adWaiting = true;
+                this._adTimer = 10;
+                localStorage.setItem('daht_ad_waiting', 'true');
+                localStorage.setItem('daht_ad_timer', '10');
+                this._updateAdButtonState();
+                return;
+            } else if (this._adTimer > 0) {
+                window.open(this.AD_LINK, '_blank');
+                return;
+            } else {
+                // Done waiting
+                this._adWaiting = false;
+                this._adStep = 1;
+                localStorage.setItem('daht_ad_waiting', 'false');
+                localStorage.setItem('daht_ad_timer', '0');
+                localStorage.setItem('daht_ad_step', '1');
+            }
+        }
+
         // If we are online, we don't hard reset the scenes. We just request a respawn.
         if (this.gameScene?.onlineMode) {
             this._hideDeathOverlay();
@@ -553,9 +668,13 @@ export class HUDScene extends Phaser.Scene {
 
         this._hideDeathOverlay();
         this.cameras.main.fadeOut(300, 0, 0, 0);
-        this.time.delayedCall(300, () => {
-            this.scene.stop('HUDScene');
-            this.scene.stop('GameScene');
+        this.time.delayedCall(320, () => {
+            // Stop GameScene first (safe to do from HUDScene)
+            if (this.scene.isActive('GameScene')) {
+                this.scene.stop('GameScene');
+            }
+            // Then restart from Boot — scene.start stops HUDScene automatically
+            // because BootScene will then launch GameScene which launches HUDScene
             this.scene.start('BootScene');
         });
     }
@@ -567,7 +686,7 @@ export class HUDScene extends Phaser.Scene {
         if (!this.gameScene) return;
         this.gameScene.events.on('hudUpdate', d => this._onHUDUpdate(d));
         this.gameScene.events.on('waveStart', d => {
-            this.waveText.setText(`WAVE ${d.wave}`);
+            this.waveText.setText(`${this.t.hudWave} ${d.wave}`);
             this.tweens.add({ targets: this.waveText, scaleX: 1.4, scaleY: 1.4, duration: 300, yoyo: true });
         });
         this.gameScene.events.on('inventoryChanged', inv => this._buildDynamicSidebar(inv, this.gameScene.player?.keysCollected || 0));
@@ -579,7 +698,7 @@ export class HUDScene extends Phaser.Scene {
         this.gameScene.events.on('playerDied', () => this._showDeathOverlay());
         this.gameScene.events.on('playerRespawned', () => this._hideDeathOverlay());
         this.gameScene.events.on('playerWon',  () => this._showWinOverlay());
-        this.gameScene.events.on('botWon',      d  => this._showBotWinOverlay(d?.name || 'منافس مجهول'));
+        this.gameScene.events.on('botWon',      d  => this._showBotWinOverlay(d?.name || this.t.unknownRival));
     }
 
     _showWinOverlay() {
@@ -587,19 +706,19 @@ export class HUDScene extends Phaser.Scene {
         this._gameEndShown = true;
         const W = this.W, H = this.H, S = this.S;
 
-        const bg = this.add.rectangle(W/2, H/2, W, H, 0x000000, 0.85).setScrollFactor(0).setDepth(350).setInteractive();
+        this.add.rectangle(W/2, H/2, W, H, 0x000000, 0.85).setScrollFactor(0).setDepth(350).setInteractive();
         const pW = Math.min(320*S, W-40), pH = 220*S;
         this._createUIPanel(W/2 - pW/2, H/2 - pH/2, pW, pH, 0x061a0e, 0x44ff88, 0.96).setDepth(351);
 
-        this.add.text(W/2, H/2 - 70*S, '🏆 أنت حر!', {
+        this.add.text(W/2, H/2 - 70*S, this.t.winTitle, {
             fontFamily: 'Outfit, sans-serif', fontSize: `${20*S}px`, color: '#44ff88', fontStyle: 'bold'
         }).setOrigin(0.5).setScrollFactor(0).setDepth(352);
 
-        this.add.text(W/2, H/2 - 30*S, 'لقد فتحت البوابة وهربت من المتاهة!', {
+        this.add.text(W/2, H/2 - 30*S, this.t.winDesc, {
             fontFamily: 'Outfit, sans-serif', fontSize: `${10*S}px`, color: '#ccffee'
         }).setOrigin(0.5).setScrollFactor(0).setDepth(352);
 
-        const btn = this._createButton(W/2, H/2 + 45*S, 180*S, 40*S, '🔄', 'العب مجدداً', '', 0x226633, () => {
+        const btn = this._createButton(W/2, H/2 + 45*S, 180*S, 40*S, '🔄', this.t.playAgain, '', 0x226633, () => {
             this._gameEndShown = false;
             this.scene.stop('HUDScene');
             this.scene.stop('GameScene');
@@ -615,24 +734,24 @@ export class HUDScene extends Phaser.Scene {
         this._gameEndShown = true;
         const W = this.W, H = this.H, S = this.S;
 
-        const bg = this.add.rectangle(W/2, H/2, W, H, 0x000000, 0.87).setScrollFactor(0).setDepth(350).setInteractive();
+        this.add.rectangle(W/2, H/2, W, H, 0x000000, 0.87).setScrollFactor(0).setDepth(350).setInteractive();
         const pW = Math.min(340*S, W-40), pH = 240*S;
         this._createUIPanel(W/2 - pW/2, H/2 - pH/2, pW, pH, 0x1a0608, 0xff4444, 0.96).setDepth(351);
 
-        this.add.text(W/2, H/2 - 80*S, '❌ خسرت!', {
+        this.add.text(W/2, H/2 - 80*S, this.t.lossTitle, {
             fontFamily: 'Outfit, sans-serif', fontSize: `${20*S}px`, color: '#ff5555', fontStyle: 'bold'
         }).setOrigin(0.5).setScrollFactor(0).setDepth(352);
 
-        this.add.text(W/2, H/2 - 40*S, `لقد نجح ${botName} بالفرار`, {
+        this.add.text(W/2, H/2 - 40*S, `${this.t.botEscaped} ${botName}`, {
             fontFamily: 'Outfit, sans-serif', fontSize: `${11*S}px`, color: '#ffaaaa'
         }).setOrigin(0.5).setScrollFactor(0).setDepth(352);
 
-        this.add.text(W/2, H/2 - 10*S, 'تعفّن في المتاهة أيها السجين.', {
+        this.add.text(W/2, H/2 - 10*S, this.t.lossInsult, {
             fontFamily: 'Outfit, sans-serif', fontSize: `${9*S}px`, color: '#ff8888',
             wordWrap: { width: pW - 30 }
         }).setOrigin(0.5).setScrollFactor(0).setDepth(352);
 
-        const btn = this._createButton(W/2, H/2 + 60*S, 180*S, 40*S, '🔄', 'أعد المحاولة', '', 0xbb2233, () => {
+        const btn = this._createButton(W/2, H/2 + 60*S, 180*S, 40*S, '🔄', this.t.retryLabel, '', 0xbb2233, () => {
             this._gameEndShown = false;
             this.scene.stop('HUDScene');
             this.scene.stop('GameScene');
@@ -653,26 +772,107 @@ export class HUDScene extends Phaser.Scene {
         this.coinText.setText((data.coins||0).toString());
         this.killText.setText((data.kills||0).toString());
         if (data.keys) this.keyText.setText(`${data.keys.collected || 0}/10`);
-        if (data.wave > 0) this.waveText.setText(`WAVE ${data.wave}`);
+        if (data.wave > 0) this.waveText.setText(`${this.t.hudWave} ${data.wave}`);
         if (data.inventory) Object.assign(this, { _cachedInv: data.inventory });
         this._buildDynamicSidebar(data.inventory, data.keys ? data.keys.collected : 0);
     }
 
     _buildMinimap() {
         const S = this.S;
-        const size = Math.min(110*S, 150);
-        const mx = 6*S, my = 38*S;
+        const savedSize = parseInt(localStorage.getItem('daht_minimap_size') || '0', 10);
+        const baseSize = savedSize || Math.min(110 * S, 150);
+        const size = Math.round(Math.min(Math.max(baseSize, 80), 260));
+        const mx = 6*S;
+        const my = 38*S;
 
-        this._createUIPanel(mx-2, my-2, size+4, size+4, 0x050711, 0x4488ff, 0.9).setDepth(199);
+        this._mapX = mx;
+        this._mapY = my;
+        this._mapSize = size;
+        this._minimapBorderGfx = this._createUIPanel(mx-2, my-2, size+4, size+4, 0x050711, 0x4488ff, 0.9).setDepth(199);
         this.minimapRT = this.add.renderTexture(mx, my, size, size).setScrollFactor(0).setDepth(200).setOrigin(0,0);
-        this._mapSize = size; this._mapX = mx;
 
-        // Legend button
-        const lBtn = this._createButton(mx + size/2, my + size + 16*S, size, 22*S, '🔍', 'دليل خريطة', '', 0x334466, () => this._toggleLegend());
-        lBtn.setDepth(200);
+        // ─ Resize Handle ─
+        const handleH = 14*S;
+        this._resizeHandle = this.add.graphics().setScrollFactor(0).setDepth(201);
+        this._drawResizeHandle(size);
 
-        this.time.addEvent({ delay: 150, loop: true, callback: () => this._drawMinimap() });
+        // Make handle zone interactive
+        this._resizeZone = this.add.zone(mx + size/2, my + size + handleH/2, size, handleH)
+            .setScrollFactor(0).setDepth(202).setInteractive({ cursor: 'ns-resize' });
+
+        let dragStartY = 0, dragStartSize = 0;
+        this._resizeZone.on('pointerdown', (ptr) => {
+            dragStartY = ptr.y;
+            dragStartSize = this._mapSize;
+        });
+        this.input.on('pointermove', (ptr) => {
+            if (ptr.isDown && dragStartY !== 0) {
+                const delta = ptr.y - dragStartY;
+                const newSize = Math.min(Math.max(dragStartSize + delta, 80), 260);
+                if (Math.abs(newSize - this._mapSize) > 2) {
+                    this._resizeMinimapTo(Math.round(newSize));
+                }
+            }
+        });
+        this.input.on('pointerup', () => {
+            if (dragStartY !== 0) {
+                localStorage.setItem('daht_minimap_size', String(this._mapSize));
+                dragStartY = 0;
+            }
+        });
+
+        // Legend button (positioned dynamically based on height)
+        const legendLabel = this.t.mapLegend || this.t.hudLegendTitle || 'Legend';
+        this._legendBtn = this._createButton(mx + size/2, my + size + handleH + 16*S, size, 22*S, '🔍', legendLabel, '', 0x334466, () => this._toggleLegend());
+        this._legendBtn.setDepth(200);
+
+        const minimapDelay = this.gameScene?.performanceProfile?.lowEnd ? 400 : 150;
+        this.time.addEvent({ delay: minimapDelay, loop: true, callback: () => this._drawMinimap() });
     }
+
+    _drawResizeHandle(size) {
+        const S = this.S;
+        const mx = this._mapX, my = this._mapY;
+        const handleH = 14*S;
+        const hy = my + size;
+        this._resizeHandle.clear();
+        this._resizeHandle.fillStyle(0x1a2244, 0.9);
+        this._resizeHandle.fillRoundedRect(mx - 2, hy, size + 4, handleH, { bl: 8*S, br: 8*S, tr: 0, tl: 0 });
+        this._resizeHandle.lineStyle(1, 0x4488ff, 0.4);
+        this._resizeHandle.strokeRoundedRect(mx - 2, hy, size + 4, handleH, { bl: 8*S, br: 8*S, tr: 0, tl: 0 });
+        // Arrow icon
+        const cx = mx + size/2, cy = hy + handleH/2;
+        this._resizeHandle.fillStyle(0x4488ff, 0.8);
+        // up arrow
+        this._resizeHandle.fillTriangle(cx - 12*S, cy + 1*S, cx, cy - 3*S, cx + 12*S, cy + 1*S);
+        // down arrow
+        this._resizeHandle.fillTriangle(cx - 12*S, cy - 1*S, cx, cy + 3*S, cx + 12*S, cy - 1*S);
+    }
+
+    _resizeMinimapTo(newSize) {
+        const S = this.S;
+        const mx = this._mapX, my = this._mapY;
+        this._mapSize = Math.max(32, Math.floor(newSize));
+
+        // Recreate render texture (resize not supported in-place cleanly)
+        if (this.minimapRT) this.minimapRT.destroy();
+        this.minimapRT = this.add.renderTexture(mx, my, this._mapSize, this._mapSize).setScrollFactor(0).setDepth(200).setOrigin(0,0);
+
+        // Redraw border
+        if (this._minimapBorderGfx) this._minimapBorderGfx.destroy();
+        this._minimapBorderGfx = this._createUIPanel(mx-2, my-2, this._mapSize+4, this._mapSize+4, 0x050711, 0x4488ff, 0.9).setDepth(199);
+
+        // Move handle & legend
+        const handleH = 14*S;
+        this._resizeHandle.clear();
+        this._drawResizeHandle(this._mapSize);
+        this._resizeZone.setPosition(mx + this._mapSize/2, my + this._mapSize + handleH/2);
+        this._resizeZone.setSize(this._mapSize, handleH);
+        if (this._legendBtn) {
+            this._legendBtn.setPosition(mx + this._mapSize/2, my + this._mapSize + handleH + 16*S);
+        }
+    }
+
 
     _drawMinimap() {
         const data = this.gameScene?.getMinimapData();
@@ -721,9 +921,20 @@ export class HUDScene extends Phaser.Scene {
         const rowH = 18*S;
         const pad = 10*S;
         const titleH = 20*S;
-        const totalH = pad + titleH + LEGEND.length * rowH + pad;
         const lx = this._mapX + this._mapSize + 10*S;
         const ly = 38*S;
+        const dynamicLegend = [
+            { color: 0x44ddff, label: this.t.legendPlayer || this.t.hudPlayerYou || 'Player' },
+            { color: 0xff3333, label: this.t.legendEnemies || this.t.hudEnemies || 'Enemies' },
+            { color: 0xffd700, label: this.t.legendKeys || this.t.hudKeys || 'Keys' },
+            { color: 0x44cc66, label: this.t.legendHealth || this.t.hudHealth || 'Health' },
+            { color: 0xffaa00, label: this.t.legendAmmo || this.t.hudAmmo || 'Ammo' },
+            { color: 0xff88ff, label: this.t.legendGrenades || this.t.hudGrenades || 'Grenades' },
+            { color: 0x00ff88, label: this.t.legendExit || this.t.hudPortal || 'Portal' },
+            { color: 0x111111, label: this.t.legendWalls || this.t.hudWalls || 'Walls' },
+            { color: 0xffffff, label: this.t.legendWormholes || this.t.hudWormholes || 'Wormholes' },
+        ];
+        const totalH = pad + titleH + dynamicLegend.length * rowH + pad;
 
         const container = this.add.container(0, 0).setScrollFactor(0).setDepth(300);
 
@@ -736,7 +947,7 @@ export class HUDScene extends Phaser.Scene {
         container.add(this._createUIPanel(lx, ly, w, totalH, 0x080c1a, 0x44aaff, 0.97));
 
         // Title
-        container.add(this.add.text(lx + w/2, ly + pad, 'دليل الألوان', {
+        container.add(this.add.text(lx + w/2, ly + pad, this.t.mapLegend || this.t.hudLegendTitle || 'Legend', {
             fontFamily: '"Outfit", "Tajawal", sans-serif',
             fontSize: `${11*S}px`,
             color: '#44aaff',
@@ -749,7 +960,7 @@ export class HUDScene extends Phaser.Scene {
         divG.lineBetween(lx + 8*S, ly + pad + titleH + 2*S, lx + w - 8*S, ly + pad + titleH + 2*S);
         container.add(divG);
 
-        LEGEND.forEach((it, i) => {
+        dynamicLegend.forEach((it, i) => {
             const iy = ly + pad + titleH + 8*S + i * rowH;
             // Dot
             const dot = this.add.circle(lx + 14*S, iy + rowH/2, 5*S, it.color).setScrollFactor(0);
@@ -801,10 +1012,10 @@ export class HUDScene extends Phaser.Scene {
 
         // Icon + text
         const icon = this.add.text(-bannerW/2 + 18*S, 0, '📲', { fontSize: `${18*S}px` }).setOrigin(0, 0.5);
-        const label = this.add.text(-bannerW/2 + 44*S, -6*S, 'ثبّت اللعبة على هاتفك', {
+        const label = this.add.text(-bannerW/2 + 44*S, -6*S, this.t.installTitle || 'Install App', {
             fontFamily: 'Outfit,sans-serif', fontSize: `${10*S}px`, color: '#44aaff', fontStyle: 'bold',
         }).setOrigin(0, 0.5);
-        const sub = this.add.text(-bannerW/2 + 44*S, 7*S, 'العب بدون متصفح كتطبيق مستقل', {
+        const sub = this.add.text(-bannerW/2 + 44*S, 7*S, this.t.installDesc || 'Play offline, faster & better!', {
             fontFamily: 'Outfit,sans-serif', fontSize: `${7.5*S}px`, color: '#7899bb',
         }).setOrigin(0, 0.5);
 
@@ -813,7 +1024,7 @@ export class HUDScene extends Phaser.Scene {
         const btnBg = this.add.graphics();
         btnBg.fillStyle(0x2266ff, 1);
         btnBg.fillRoundedRect(bannerW/2 - btnW - 30*S, -btnH/2, btnW, btnH, 8*S);
-        const btnLbl = this.add.text(bannerW/2 - 30*S - btnW/2, 0, 'تثبيت', {
+        const btnLbl = this.add.text(bannerW/2 - 30*S - btnW/2, 0, this.t.installBtn || 'Install', {
             fontFamily: 'Outfit,sans-serif', fontSize: `${10*S}px`, color: '#fff', fontStyle: 'bold',
         }).setOrigin(0.5);
 
@@ -831,10 +1042,10 @@ export class HUDScene extends Phaser.Scene {
                 this._hideInstallBanner(cont);
             } else {
                 // Fallback for when PWA native prompt isn't available (e.g. testing locally over wifi without HTTPS)
-                label.setText('افتح قائمة المتصفح (⋮)');
-                sub.setText('ثم اختر "الإضافة إلى الشاشة الرئيسية"');
+                label.setText(this.t.installManualTitle);
+                sub.setText(this.t.installManualDesc);
                 label.setColor('#ffd700');
-                btnLbl.setText('👌 فهمت');
+                btnLbl.setText(this.t.okGotIt);
                 hitBtn.removeAllListeners('pointerdown');
                 hitBtn.on('pointerdown', () => this._hideInstallBanner(cont));
             }

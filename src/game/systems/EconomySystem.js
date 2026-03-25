@@ -18,12 +18,12 @@ export class EconomySystem {
     async loadCoins() {
         if (!firebaseEnabled || !this.uid) return this.coins;
         try {
-            const docRef = doc(firestore, 'users', this.uid);
+            const docRef = doc(firestore, 'players', this.uid);
             const snap = await getDoc(docRef);
             if (snap.exists()) {
-                this.coins = snap.data().coins || 0;
+                this.coins = snap.data().goldCoins || 0;
             } else {
-                await setDoc(docRef, { coins: 0 });
+                await setDoc(docRef, { goldCoins: 0 }, { merge: true });
                 this.coins = 0;
             }
         } catch (e) {
@@ -36,8 +36,8 @@ export class EconomySystem {
         this.coins = Math.max(0, this.coins + amount);
         if (firebaseEnabled && this.uid) {
             try {
-                const docRef = doc(firestore, 'users', this.uid);
-                await updateDoc(docRef, { coins: increment(amount) });
+                const docRef = doc(firestore, 'players', this.uid);
+                await updateDoc(docRef, { goldCoins: increment(amount) });
             } catch (e) {
                 console.warn('Failed to update coins:', e);
             }

@@ -6,10 +6,17 @@ import { createGameConfig } from './config';
  * PhaserGame — React ↔ Phaser bridge component.
  * Handles React StrictMode (double mount/unmount) safely.
  */
-export default function PhaserGame({ mode = 'offline', onlineOptions = null, onGameEvent }) {
+export default function PhaserGame({ mode = 'offline', onlineOptions = null, onGameEvent, t }) {
   const containerRef = useRef(null);
   const gameRef = useRef(null);
   const destroyedRef = useRef(false);
+
+  // Sync translation object to Phaser registry when it changes
+  useEffect(() => {
+    if (gameRef.current) {
+      gameRef.current.registry.set('t', t);
+    }
+  }, [t]);
 
   useEffect(() => {
     // Guard against StrictMode re-mount when game was already destroyed
@@ -28,6 +35,7 @@ export default function PhaserGame({ mode = 'offline', onlineOptions = null, onG
       const game = new Phaser.Game(config);
 
       game.registry.set('gameMode', mode);
+      game.registry.set('t', t);
       if (onlineOptions) {
         Object.entries(onlineOptions).forEach(([k, v]) => game.registry.set(k, v));
       }
@@ -44,6 +52,8 @@ export default function PhaserGame({ mode = 'offline', onlineOptions = null, onG
         gameRef.current = null;
       }
     };
+    // This effect is intentionally mount-only to keep a single Phaser instance.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Update mode if changed

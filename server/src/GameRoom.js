@@ -59,6 +59,11 @@ class GameRoom {
         this._botShootTimer   = {};  // botId → last shoot ms
         this._monsterTimer    = null; // periodic monster spawn
         this._warEliminated   = new Set(); // real player IDs who have received their loss message
+        this._countdownTimer  = null;
+        this._lastShotAt      = {};
+        this.collectedKeyIds  = new Set();
+        this.portalSpawned    = false;
+        this.portalPos        = null;
     }
 
     /* ═══════════ PLAYER MANAGEMENT ═══════════ */
@@ -180,9 +185,17 @@ class GameRoom {
 
     onMessage(socket, type, data) {
         switch (type) {
-            case 'input':
-                this.playerInputs[socket.id] = data;
+            case 'input': {
+                const dx = Number.isFinite(Number(data?.dx)) ? Number(data.dx) : 0;
+                const dy = Number.isFinite(Number(data?.dy)) ? Number(data.dy) : 0;
+                const rotation = Number.isFinite(Number(data?.rotation)) ? Number(data.rotation) : 0;
+                this.playerInputs[socket.id] = {
+                    dx: Math.max(-1, Math.min(1, dx)),
+                    dy: Math.max(-1, Math.min(1, dy)),
+                    rotation,
+                };
                 break;
+            }
             case 'shoot':
                 this._handleShoot(socket.id, data);
                 break;
@@ -192,14 +205,38 @@ class GameRoom {
                 }
                 break;
             case 'move_team':
-                this._moveTeam(data?.targetId);
+                this._moveTeam(socket.id, data?.targetId);
                 break;
             case 'kick_player':
-                this._kickPlayer(data?.targetId);
+                this._kickPlayer(socket.id, data?.targetId);
                 break;
-            case 'pickup_key':
+            case 'pickup_key': {
                 const pk = this.players[socket.id];
-                if (pk) {
+                const keyId = Number(data?.keyId);
+                if (
+                    pk &&
+                    pk.alive &&
+                    this.phase === 'playing' &&
+                    this.mazeData?.keyPositions &&
+                    Number.isInteger(keyId) &&
+                    keyId >= 0 &&
+                    keyId < this.mazeData.keyPositions.length &&
+                    !this.collectedKeyIds.has(keyId)
+                ) {
+                    const keyTile = this.mazeData.keyPositions[keyId];
+                    const ts = 32;
+                    const keyX = keyTile.x * ts + ts / 2;
+                    const keyY = keyTile.y * ts + ts / 2;
+                    const dx = pk.x - keyX;
+                    const dy = pk.y - keyY;
+                    // Server-side pickup validation radius
+                    if (dx * dx + dy * dy <= 90 * 90) {
+                        this.collectedKeyIds.add(keyId);
+                        this._broadcastAll('key_collected', { keyId, sessionId: socket.id });
+                    } else {
+                        break;
+                    }
+
                     pk.keys = (pk.keys || 0) + 1;
                     if (pk.keys >= 10 && !this.portalSpawned) {
                         this.portalSpawned = true;
@@ -214,9 +251,9 @@ class GameRoom {
                         this._broadcastAll('portal_spawned', this.portalPos);
                     }
                 }
-                this._broadcastAll('key_collected', { keyId: data?.keyId, sessionId: socket.id });
                 break;
-            case 'enter_portal':
+            }
+            case 'enter_portal': {
                 const ep = this.players[socket.id];
                 if (ep && ep.alive && ep.keys >= 10 && this.portalPos) {
                     const dx = ep.x - this.portalPos.x, dy = ep.y - this.portalPos.y;
@@ -240,6 +277,7 @@ class GameRoom {
                     }
                 }
                 break;
+            }
             case 'request_respawn':
                 console.log(`[GameRoom] request_respawn from ${socket.id}, alive: ${this.players[socket.id]?.alive}, phase: ${this.phase}`);
                 if (this.players[socket.id] && !this.players[socket.id].alive) {
@@ -352,28 +390,40 @@ class GameRoom {
     /* ═══════════ GAME LIFECYCLE ═══════════ */
 
     _startCountdown(seconds) {
+        if (this._countdownTimer) {
+            clearInterval(this._countdownTimer);
+            this._countdownTimer = null;
+        }
         let t = seconds;
-        const iv = setInterval(() => {
+        this._countdownTimer = setInterval(() => {
             this._broadcastAll('countdown', { seconds: t });
             t--;
-            if (t < 0) { clearInterval(iv); this._startGame(); }
+            if (t < 0) {
+                clearInterval(this._countdownTimer);
+                this._countdownTimer = null;
+                this._startGame();
+            }
         }, 1000);
     }
 
     _startGame() {
         if (this.phase !== 'lobby') return;
         if (this._duelTimer) { clearInterval(this._duelTimer); this._duelTimer = null; }
+        if (this._countdownTimer) { clearInterval(this._countdownTimer); this._countdownTimer = null; }
 
         this.phase = 'playing';
+        this.portalSpawned = false;
+        this.portalPos = null;
+        this.collectedKeyIds.clear();
+        this._warEliminated.clear();
 
         // Generate maze
         this.mazeSeed  = Math.floor(Math.random() * 999999);
         this.mazeData  = MazeGenerator.generate(20, 20, 3, this.mazeSeed);
 
         // Position players on separate walkable tiles
-        const ts = this.mazeData.tileSize;
         const usedSpawns = new Set();
-        for (const [sid, p] of Object.entries(this.players)) {
+        for (const [, p] of Object.entries(this.players)) {
             // Find a unique walkable tile far from others
             const floor = this._getUniqueSpawn(usedSpawns);
             p.x = floor.x;
@@ -441,6 +491,7 @@ class GameRoom {
     /* ═══════════ TICK LOOP (20 Hz) ═══════════ */
 
     _startTick() {
+        if (this.tickTimer) return;
         this.tickTimer = setInterval(() => this._tick(), TICK_MS);
     }
 
@@ -718,19 +769,44 @@ class GameRoom {
 
     _handleShoot(sid, data) {
         const p = this.players[sid];
-        if (!p || !p.alive) return;
+        if (!p || !p.alive || this.phase !== 'playing') return;
+
+        const now = Date.now();
+        const rawVx = Number.isFinite(Number(data?.vx)) ? Number(data.vx) : 0;
+        const rawVy = Number.isFinite(Number(data?.vy)) ? Number(data.vy) : 0;
+        const isExplosive = !!data?.isExplosive;
+        const cooldown = isExplosive ? 900 : 110;
+        const lastShot = this._lastShotAt[sid] || 0;
+        if (now - lastShot < cooldown) return;
+
+        const mag = Math.sqrt(rawVx * rawVx + rawVy * rawVy);
+        if (mag < 10) return;
+
+        const maxSpeed = isExplosive ? 650 : 850;
+        const clampedMag = Math.min(mag, maxSpeed);
+        const dirX = rawVx / mag;
+        const dirY = rawVy / mag;
+        const vx = dirX * clampedMag;
+        const vy = dirY * clampedMag;
+        const damage = isExplosive ? 60 : 35;
+
+        this._lastShotAt[sid] = now;
+
+        if (this.bullets.length > 1600) {
+            this.bullets.splice(0, this.bullets.length - 1200);
+        }
+
         this.bullets.push({
             ownerId: sid,
             x: p.x, y: p.y,
-            vx: data.vx || 0, vy: data.vy || 0,
-            damage: data.damage || 10,
+            vx, vy,
+            damage,
             ttl: 60, // 3 seconds at 20Hz
         });
 
         // Broadcast shot effect to others
         this._broadcastAll('bullet_fired', {
-            x: p.x, y: p.y, vx: data.vx, vy: data.vy,
-            damage: data.damage, ownerId: sid,
+            x: p.x, y: p.y, vx, vy, damage, ownerId: sid,
         });
     }
 
@@ -776,7 +852,7 @@ class GameRoom {
             }
 
             // Hit monsters
-            for (const [mid, m] of Object.entries(this.monsters)) {
+            for (const [, m] of Object.entries(this.monsters)) {
                 if (!m.alive) continue;
                 const dx = m.x - b.x, dy = m.y - b.y;
                 if (dx * dx + dy * dy < 400) {
@@ -859,7 +935,8 @@ class GameRoom {
 
     /* ═══════════ SQUAD UTILS ═══════════ */
 
-    _moveTeam(targetId) {
+    _moveTeam(actorId, targetId) {
+        if (actorId !== this.hostId || this.phase !== 'lobby') return;
         const p = this.players[targetId];
         if (p) {
             p.team = p.team === 'red' ? 'blue' : 'red';
@@ -867,7 +944,8 @@ class GameRoom {
         }
     }
 
-    _kickPlayer(targetId) {
+    _kickPlayer(actorId, targetId) {
+        if (actorId !== this.hostId || this.phase !== 'lobby' || actorId === targetId) return;
         const sock = this.sockets.get(targetId);
         if (sock) {
             sock.emit('kicked');
@@ -908,9 +986,14 @@ class GameRoom {
         if (this._duelTimer)    clearInterval(this._duelTimer);
         if (this._botFillTimer) clearInterval(this._botFillTimer);
         if (this._monsterTimer) clearInterval(this._monsterTimer);
+        if (this._countdownTimer) clearInterval(this._countdownTimer);
         this.sockets.clear();
         this.players  = {};
         this.monsters = {};
+        this.playerInputs = {};
+        this.bullets = [];
+        this._lastShotAt = {};
+        this.collectedKeyIds.clear();
     }
 }
 

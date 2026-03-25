@@ -1,29 +1,70 @@
-/**
- * Minimal Service Worker — makes the app installable as a PWA.
- * Caches the app shell so it works offline after first load.
- */
-const CACHE_NAME = 'ss-maze-v1';
-const SHELL = ['/', '/index.html'];
+const CACHE_VERSION = 'daht-v2';
+const APP_SHELL_CACHE = `${CACHE_VERSION}-shell`;
+const ASSET_CACHE = `${CACHE_VERSION}-assets`;
 
-self.addEventListener('install', e => {
-    e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(SHELL)));
-    self.skipWaiting();
+const APP_SHELL = [
+  '/',
+  '/index.html',
+  '/manifest.json',
+  '/icon-192.png',
+  '/icon-512.png',
+];
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches.open(APP_SHELL_CACHE).then((cache) => cache.addAll(APP_SHELL))
+  );
+  self.skipWaiting();
 });
 
-self.addEventListener('activate', e => {
-    e.waitUntil(
-        caches.keys().then(keys =>
-            Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
-        )
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches.keys().then((keys) =>
+      Promise.all(
+        keys
+          .filter((key) => key !== APP_SHELL_CACHE && key !== ASSET_CACHE)
+          .map((key) => caches.delete(key))
+      )
+    )
+  );
+  self.clients.claim();
+});
+
+self.addEventListener('fetch', (event) => {
+  if (event.request.method !== 'GET') return;
+
+  const reqUrl = new URL(event.request.url);
+  const sameOrigin = reqUrl.origin === self.location.origin;
+
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          const copy = response.clone();
+          caches.open(APP_SHELL_CACHE).then((cache) => cache.put('/index.html', copy));
+          return response;
+        })
+        .catch(() => caches.match('/index.html'))
     );
-    self.clients.claim();
-});
+    return;
+  }
 
-self.addEventListener('fetch', e => {
-    // Network-first for game assets (always fresh), cache-first for shell
-    if (e.request.mode === 'navigate') {
-        e.respondWith(
-            fetch(e.request).catch(() => caches.match('/index.html'))
-        );
-    }
+  if (sameOrigin && reqUrl.pathname.startsWith('/assets/')) {
+    event.respondWith(
+      caches.open(ASSET_CACHE).then(async (cache) => {
+        const cached = await cache.match(event.request);
+        if (cached) return cached;
+        const fresh = await fetch(event.request);
+        cache.put(event.request, fresh.clone());
+        return fresh;
+      })
+    );
+    return;
+  }
+
+  if (sameOrigin) {
+    event.respondWith(
+      fetch(event.request).catch(() => caches.match(event.request))
+    );
+  }
 });

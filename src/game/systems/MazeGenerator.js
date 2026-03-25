@@ -117,9 +117,6 @@ export class MazeGenerator {
         const sx2 = cx2 * this.cellSize + 1;
         const sy2 = cy2 * this.cellSize + 1;
 
-        const midX = (sx1 + sx2) >> 1;
-        const midY = (sy1 + sy2) >> 1;
-
         if (cx1 === cx2) {
             // Vertical passage
             const startY = Math.min(sy1, sy2);
@@ -254,7 +251,7 @@ export class MazeGenerator {
      * Uses LCG PRNG + recursive backtracker with cellSize=3 (2-wide corridors).
      * Matches server/src/logic/MazeGenerator.js exactly.
      */
-    static generateOnline(w, h, scale, seed) {
+    static _generateOnlineLegacyA(w, h, scale, seed) {
         const width  = w * scale + 1;
         const height = h * scale + 1;
         const grid = Array.from({ length: height }, () => new Array(width).fill(1));
@@ -443,7 +440,7 @@ export class MazeGenerator {
      * (LCG RNG + recursive DFS backtracker). Identical seed → identical map.
      * Must stay in sync with server/src/logic/MazeGenerator.js
      */
-    static generateOnline(w = 20, h = 20, scale = 3, seed = 0) {
+    static _generateOnlineLegacyB(w = 20, h = 20, scale = 3, seed = 0) {
         const width  = w * scale + 1;
         const height = h * scale + 1;
         const tileSize = 32;

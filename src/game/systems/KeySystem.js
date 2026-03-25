@@ -22,12 +22,15 @@ export class KeySystem {
 
             const key = this.scene.add.container(x, y);
 
-            // Key body
-            const glow = this.scene.add.circle(0, 0, 12, 0xffd700, 0.3);
-            const keyBody = this.scene.add.circle(0, 0, 7, 0xffd700);
-            const keyHole = this.scene.add.circle(-2, -2, 2, 0x0a0e27);
+            // Key body (redesigned to look like a real key)
+            const glow = this.scene.add.circle(0, 0, 16, 0xffd700, 0.25);
+            const head = this.scene.add.circle(-5, 0, 5, 0xffcc00);
+            const hole = this.scene.add.circle(-5, 0, 2, 0x0a0e27);
+            const shaft = this.scene.add.rectangle(3, 0, 10, 3, 0xffcc00);
+            const tooth1 = this.scene.add.rectangle(3, 3, 2.5, 4, 0xffcc00);
+            const tooth2 = this.scene.add.rectangle(7, 3, 2.5, 4, 0xffcc00);
 
-            key.add([glow, keyBody, keyHole]);
+            key.add([glow, head, hole, shaft, tooth1, tooth2]);
             key.setSize(20, 20);
             key.setData('index', i);
 
@@ -62,12 +65,15 @@ export class KeySystem {
     spawnSingleKey(x, y) {
         const key = this.scene.add.container(x, y);
 
-        // Key body
-        const glow = this.scene.add.circle(0, 0, 12, 0xffd700, 0.3);
-        const keyBody = this.scene.add.circle(0, 0, 7, 0xffd700);
-        const keyHole = this.scene.add.circle(-2, -2, 2, 0x0a0e27);
+        // Key body (redesigned to look like a real key)
+        const glow = this.scene.add.circle(0, 0, 16, 0xffd700, 0.25);
+        const head = this.scene.add.circle(-5, 0, 5, 0xffcc00);
+        const hole = this.scene.add.circle(-5, 0, 2, 0x0a0e27);
+        const shaft = this.scene.add.rectangle(3, 0, 10, 3, 0xffcc00);
+        const tooth1 = this.scene.add.rectangle(3, 3, 2.5, 4, 0xffcc00);
+        const tooth2 = this.scene.add.rectangle(7, 3, 2.5, 4, 0xffcc00);
 
-        key.add([glow, keyBody, keyHole]);
+        key.add([glow, head, hole, shaft, tooth1, tooth2]);
         key.setSize(20, 20);
         
         // Random unique index so it doesn't collide
@@ -100,10 +106,26 @@ export class KeySystem {
         keyContainer.destroy();
         this.keys = this.keys.filter(k => k !== keyContainer);
 
-        // Only flash camera for the real player (bots have an `index` property)
+        // Only show effect for the real player (bots have an `index` property)
         const isRealPlayer = (player.index === undefined);
         if (isRealPlayer) {
-            this.scene.cameras.main.flash(200, 255, 215, 0, false);
+            const px = keyContainer.x;
+            const py = keyContainer.y;
+            
+            // Localized visual explosion instead of full screen flash
+            const burst = this.scene.add.circle(px, py, 14, 0xffffff, 1).setDepth(100);
+            const ring = this.scene.add.circle(px, py, 16, 0xffd700, 0.8).setDepth(99);
+            
+            this.scene.tweens.add({
+                targets: burst, scaleX: 2.2, scaleY: 2.2, alpha: 0,
+                duration: 250, ease: 'Power2',
+                onComplete: () => burst.destroy()
+            });
+            this.scene.tweens.add({
+                targets: ring, scaleX: 3.5, scaleY: 3.5, alpha: 0,
+                duration: 400, ease: 'Power2',
+                onComplete: () => ring.destroy()
+            });
         }
 
         if (this.collectedCount >= this.totalKeys && !this.portalSpawned) {
@@ -166,7 +188,7 @@ export class KeySystem {
         this.scene.events.emit('portalSpawned', { x: px, y: py });
     }
 
-    enterPortal(player) {
+    enterPortal() {
         if (!this.portal || this.collectedCount < this.totalKeys) return false;
 
         if (this.scene.onlineMode && this.scene.onlineSync) {

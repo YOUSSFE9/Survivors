@@ -13,6 +13,10 @@ import { TrapSystem } from '../systems/TrapSystem';
 import { Pathfinder } from '../systems/Pathfinder';
 import { BotPlayer } from '../entities/BotPlayer';
 import { network as netMgr } from '../multiplayer/NetworkManager';
+import { 
+    getDailyStats, incrementDailyStat, getDailyKey, addGoldCoins,
+    firestore, doc as fbDoc, getDoc as fbGetDoc, setDoc as fbSetDoc, serverTimestamp 
+} from '../../firebase/config';
 
 // OnlineSync is loaded dynamically to avoid bundling Colyseus in offline builds
 let OnlineSync = null;
@@ -41,10 +45,21 @@ export class GameScene extends Phaser.Scene {
         this.enemies = [];
         this.pickups = [];
         this.killCount = 0;
+        this.performanceProfile = this._buildPerformanceProfile();
+        this._frameCounter = 0;
+
+        // Pre-allocate explosion circle pool to avoid GC spikes during combat
+        this.explosionPool = [];
+        const POOL_SIZE = this.performanceProfile.lowEnd ? 10 : 20;
+        for (let i = 0; i < POOL_SIZE; i++) {
+            const c = this.add.circle(0, 0, 6, 0xff6600, 0.85).setDepth(100).setActive(false).setVisible(false);
+            this.explosionPool.push(c);
+        }
 
         // Generate maze — use server algorithm+seed for online, original for offline
-        const mazeSeed = this.onlineSeed || null;
-        if (mazeSeed) {
+        const hasOnlineSeed = this.onlineSeed !== null && this.onlineSeed !== undefined;
+        const mazeSeed = hasOnlineSeed ? this.onlineSeed : null;
+        if (hasOnlineSeed) {
             // Online: use same algorithm as server for identical maze
             this.mazeData = MazeGenerator.generateOnline
                 ? MazeGenerator.generateOnline(20, 20, 3, mazeSeed, this.onlineGrid)
@@ -71,13 +86,14 @@ export class GameScene extends Phaser.Scene {
 
         this._drawMaze();
 
-        // Bullet group (capped for perf)
-        this.bulletGroup = this.physics.add.group({ maxSize: 40 });
+        // Bullet pool scales down on low-end devices to keep frame time stable.
+        this.bulletGroup = this.physics.add.group({ maxSize: this.performanceProfile.maxBullets });
 
         // Player (starts with no ammo/weapon)
         const spawnX = this.mazeData.playerSpawn.x * this.tileSize + this.tileSize / 2;
         const spawnY = this.mazeData.playerSpawn.y * this.tileSize + this.tileSize / 2;
         this.player = new Player(this, spawnX, spawnY, true);
+        this._setupKeyboardInput();
 
         // BFS Pathfinder (shared by all enemies)
         this.pathfinder = new Pathfinder(this.mazeData.grid, this.tileSize);
@@ -92,7 +108,7 @@ export class GameScene extends Phaser.Scene {
         // Space Background (fewer stars for perf)
         this.cameras.main.setBackgroundColor('#000000');
         const starGfx = this.add.graphics().setDepth(-10);
-        for (let i = 0; i < 200; i++) {
+        for (let i = 0; i < this.performanceProfile.starCount; i++) {
             const sx = Phaser.Math.Between(-1000, worldW + 1000);
             const sy = Phaser.Math.Between(-1000, worldH + 1000);
             const r = Math.random() * 1.5 + 0.5;
@@ -106,6 +122,10 @@ export class GameScene extends Phaser.Scene {
 
         // Economy
         this.economy = new EconomySystem();
+        if (this._prizeUid) {
+            this.economy.setUser(this._prizeUid);
+            this.economy.loadCoins().then(() => this._emitHUDUpdate());
+        }
 
         // Pickups
         this._spawnPickups();
@@ -180,18 +200,27 @@ export class GameScene extends Phaser.Scene {
 
             // Listen for portal entry (playerWon event from KeySystem)
             this.events.on('playerWon', () => {
+                // 1. Track portal for daily bonus
                 incrementDailyStat(this._prizeUid, 'portalsOpened', 1).then(() => {
                     // Check if player reached 10 portals today → award 10 coins
                     getDailyStats(this._prizeUid, this._prizeName, this._prizePhoto).then(stats => {
                         if (stats && stats.portalsOpened >= 10) {
                             // Award 10 coins only if not already awarded today
-                            const ref = fbDoc(firestore, 'daily_awards', `${this._prizeUid}_10portals_${getDailyKey()}`);
+                            const awardId = `${this._prizeUid}_10portals_${getDailyKey()}`;
+                            const ref = fbDoc(firestore, 'daily_awards', awardId);
                             fbGetDoc(ref).then(snap => {
                                 if (!snap.exists()) {
-                                    addGoldCoins(this._prizeUid, 10);
-                                    fbSetDoc(ref, { uid: this._prizeUid, awardedAt: serverTimestamp() }).catch(() => {});
+                                    addGoldCoins(this._prizeUid, 10).then(() => {
+                                        fbSetDoc(ref, { 
+                                            uid: this._prizeUid, 
+                                            day: getDailyKey(), 
+                                            reason: '10_portals', 
+                                            coins: 10, 
+                                            awardedAt: serverTimestamp() 
+                                        }).catch(() => {});
+                                    });
                                 }
-                            }).catch(() => addGoldCoins(this._prizeUid, 10));
+                            }).catch(() => {});
                         }
                     }).catch(() => {});
                 }).catch(() => {});
@@ -201,19 +230,29 @@ export class GameScene extends Phaser.Scene {
         // Launch HUD
         this.scene.launch('HUDScene', { gameScene: this });
         this.time.delayedCall(200, () => this._emitHUDUpdate());
-
-        // Periodic trap check
-        this.time.addEvent({
-            delay: 80, loop: true,
-            callback: () => { if (this.trapSystem && this.player) this.trapSystem.checkPlayerCollision(this.player); },
-        });
     }
 
     update(time, delta) {
-        if (this.player) this.player.update(time, delta);
+        if (!this.player) return;
+        this._frameCounter++;
+
+        // If player is dead, pause main gameplay logic (skip AI, traps, etc.)
+        if (!this.player.alive) {
+            this.player.update(time, delta); // Still allow player animation/tint
+            if (this.onlineMode && this.onlineSync) {
+                this.onlineSync.update();
+            }
+            return;
+        }
+
+        this.player.update(time, delta);
 
         // Update bots
+        const botStride = this.performanceProfile.lowEnd ? 2 : 1;
+        let botIdx = 0;
         for (const bot of (this.bots || [])) {
+            botIdx++;
+            if (botStride > 1 && ((botIdx + this._frameCounter) % botStride !== 0)) continue;
             if (bot.alive) {
                 bot.update(time, delta);
                 // Only check wormhole if bot is still fully visible (not mid-tween)
@@ -235,8 +274,13 @@ export class GameScene extends Phaser.Scene {
             if (!e.alive) continue;
             // Only update enemies within extended camera view
             const ex = e.container.x, ey = e.container.y;
-            if (ex > camX - VIEW_MARGIN && ex < camX + camW + VIEW_MARGIN &&
-                ey > camY - VIEW_MARGIN && ey < camY + camH + VIEW_MARGIN) {
+            const inView = ex > camX - VIEW_MARGIN && ex < camX + camW + VIEW_MARGIN &&
+                ey > camY - VIEW_MARGIN && ey < camY + camH + VIEW_MARGIN;
+            if (inView) {
+                if (this.performanceProfile.enemyUpdateStride > 1 &&
+                    ((i + this._frameCounter) % this.performanceProfile.enemyUpdateStride !== 0)) {
+                    continue;
+                }
                 e.update(time, delta);
             } else {
                 e.container.body.setVelocity(0, 0); // freeze off-screen
@@ -247,19 +291,30 @@ export class GameScene extends Phaser.Scene {
             this._checkWormholeCollisions(this.player.container, this.player);
         }
 
-        // Trap laser draw (every frame for smooth neon animation)
-        if (this.trapSystem) this.trapSystem.update();
+        // Trap laser draw & collisions
+        if (this.trapSystem) {
+            this.trapSystem.update();
+            this.trapSystem.checkPlayerCollision(this.player);
+        }
 
-        // Bullet cleanup
-        this.bulletGroup.getChildren().forEach(b => {
-            if (b.active) {
-                if (b.x < 0 || b.y < 0 ||
-                    b.x > this.physics.world.bounds.width ||
-                    b.y > this.physics.world.bounds.height) {
-                    this._recycleBullet(b);
+        // Bullet cleanup (halve frequency on low-end devices).
+        if (!this.performanceProfile.lowEnd || this._frameCounter % 2 === 0) {
+            const now = Date.now();
+            this.bulletGroup.getChildren().forEach(b => {
+                if (b.active) {
+                    // Out of bounds
+                    if (b.x < 0 || b.y < 0 ||
+                        b.x > this.physics.world.bounds.width ||
+                        b.y > this.physics.world.bounds.height) {
+                        this._recycleBullet(b);
+                        return;
+                    }
+                    // Safety max-lifetime: 3s — prevents stuck-corner bullets
+                    const age = now - (b.getData('spawnTime') || now);
+                    if (age > 3000) this._recycleBullet(b);
                 }
-            }
-        });
+            });
+        }
 
         // Breach via space when breach mode active
         if (this._breachActive && this.player?.alive &&
@@ -267,12 +322,8 @@ export class GameScene extends Phaser.Scene {
             this._tryBreach();
         }
 
-        // Online: send local input to server + interpolate remote players
-        if (this.onlineMode && this.onlineSync && this.player?.alive) {
-            // Use raw input intent (not Phaser velocity which drops to 0 against walls)
-            const dx = this.player.inputDx || 0;
-            const dy = this.player.inputDy || 0;
-            this.onlineSync.sendInput(dx, dy, this.player.container.rotation);
+        // Online: interpolate remote/server-synced entities
+        if (this.onlineMode && this.onlineSync) {
             this.onlineSync.update();
         }
     }
@@ -315,17 +366,22 @@ export class GameScene extends Phaser.Scene {
                 const { winner, killerName, isEliminated } = data;
 
                 if (isEliminated) {
-                    // War: THIS player was eliminated — game continues for others
-                    // Show loss overlay immediately so player can leave
                     this.events.emit('onlineGameOver', { isWinner: false, killerName, mode: this.onlineMode, isEliminated: true });
                     this.scene.get('HUDScene')?.events?.emit('showLoss', { name: killerName || 'an enemy', allowReturn: true });
                     return;
                 }
 
-                // Normal game over (duel, war final result)
                 const isWinner = winner === this.onlineUid ||
                     (this.onlineTeam && winner === this.onlineTeam) ||
                     winner === this.onlineSync.mySessionId;
+
+                // Track portal entry for daily stats if in Survivors/War mode
+                if (isWinner && this._prizeUid) {
+                    if (this.onlineMode === 'survivors' || this.onlineMode === 'war') {
+                         incrementDailyStat(this._prizeUid, 'portalsOpened', 1).catch(() => {});
+                    }
+                }
+
                 this.events.emit('onlineGameOver', { isWinner, killerName, mode: this.onlineMode });
                 this.scene.get('HUDScene')?.events?.emit(
                     isWinner ? 'showWin' : 'showLoss',
@@ -555,30 +611,96 @@ export class GameScene extends Phaser.Scene {
     }
 
     // ═══ BULLETS ═══
-    createBullet(x, y, vx, vy, damage, isExplosive, explosionRadius, weaponKey) {
+    _isWall(x, y) {
+        const ts = this.tileSize;
+        const gx = Math.floor(x / ts), gy = Math.floor(y / ts);
+        if (gx < 0 || gy < 0 || gx >= this.mazeData.width || gy >= this.mazeData.height) return true;
+        return this.mazeData.grid[gy][gx] === TILE.WALL;
+    }
+
+    _resolveBulletSpawn(x, y, vx, vy) {
+        const mag = Math.sqrt(vx * vx + vy * vy);
+        if (!Number.isFinite(mag) || mag < 0.0001) return { x, y, adjusted: false };
+        const dx = vx / mag;
+        const dy = vy / mag;
+        if (!this._isWall(x, y)) return { x, y, adjusted: false };
+
+        const maxBacktrack = Math.max(72, Math.floor(this.tileSize * 3));
+        for (let dist = 2; dist <= maxBacktrack; dist += 2) {
+            const tx = x - dx * dist;
+            const ty = y - dy * dist;
+            if (!this._isWall(tx, ty)) return { x: tx, y: ty, adjusted: true };
+        }
+
+        const maxForward = Math.max(24, Math.floor(this.tileSize));
+        for (let dist = 2; dist <= maxForward; dist += 2) {
+            const tx = x + dx * dist;
+            const ty = y + dy * dist;
+            if (!this._isWall(tx, ty)) return { x: tx, y: ty, adjusted: true };
+        }
+
+        if (this.player?.container && !this._isWall(this.player.container.x, this.player.container.y)) {
+            const safeX = this.player.container.x + dx * 14;
+            const safeY = this.player.container.y + dy * 14;
+            if (!this._isWall(safeX, safeY)) return { x: safeX, y: safeY, adjusted: true };
+        }
+
+        return { x, y, adjusted: true };
+    }
+
+    createBullet(x, y, vx, vy, damage, isExplosive, explosionRadius) {
+        if (!Number.isFinite(vx) || !Number.isFinite(vy) || (vx === 0 && vy === 0)) return null;
+
         let bullet = this.bulletGroup.getFirstDead(false);
+        if (!bullet) {
+            const activeBullets = this.bulletGroup.getChildren().filter((b) => b.active);
+            if (activeBullets.length >= this.performanceProfile.maxBullets) {
+                bullet = activeBullets.reduce((oldest, current) => {
+                    const oldestTs = oldest.getData('spawnTime') || 0;
+                    const currentTs = current.getData('spawnTime') || 0;
+                    return currentTs < oldestTs ? current : oldest;
+                });
+                this._recycleBullet(bullet);
+            }
+        }
         if (!bullet) {
             bullet = this.physics.add.image(x, y, 'bullet');
             this.bulletGroup.add(bullet);
         }
-        bullet.enableBody(true, x, y, true, true);
-        bullet.setPosition(x, y);
+
+        const spawn = this._resolveBulletSpawn(x, y, vx, vy);
+        const bx = spawn.x;
+        const by = spawn.y;
+        const now = Date.now();
+        const wallGraceMs = spawn.adjusted ? 110 : 35;
+
+        bullet.enableBody(true, bx, by, true, true);
+        bullet.setPosition(bx, by);
         bullet.body.setVelocity(vx, vy);
         bullet.body.setAllowGravity(false);
+        bullet.body.setCollideWorldBounds(true);
+        bullet.body.onWorldBounds = true;
         bullet.setDepth(15);
         bullet.setData('damage', damage);
         bullet.setData('isExplosive', isExplosive || false);
         bullet.setData('explosionRadius', explosionRadius || 0);
         bullet.setData('owner', 'player');
+        bullet.setData('spawnTime', now);
+        bullet.setData('wallGraceUntil', now + wallGraceMs);
+        bullet.setData('prevX', bx);
+        bullet.setData('prevY', by);
 
-        if (isExplosive) { bullet.setTint(0xff3300); bullet.setDisplaySize(10, 10); }
-        else             { bullet.setTint(0xffcc00); bullet.setDisplaySize(5, 5); }
+        if (isExplosive) { bullet.setTint(0xff3300); bullet.setDisplaySize(12, 12); }
+        else             { bullet.setTint(0xffcc00); bullet.setDisplaySize(6, 6); }
 
-        this.time.delayedCall(2000, () => { if (bullet.active) this._recycleBullet(bullet); });
         return bullet;
     }
 
-    _recycleBullet(bullet) { bullet.disableBody(true, true); }
+    _recycleBullet(bullet) {
+        bullet.disableBody(true, true);
+        bullet.setData('prevX', null);
+        bullet.setData('prevY', null);
+    }
 
     // ═══ PICKUPS (routes through player.receivePickup) ═══
     _spawnPickups() {
@@ -765,20 +887,21 @@ export class GameScene extends Phaser.Scene {
         this.cameras.main.shake(250, 0.02);
         this.tweens.add({ targets: boom, scaleX: 5, scaleY: 5, alpha: 0, duration: 500, ease: 'Power2', onComplete: () => boom.destroy() });
         const r = 100;
+        const rSq = r * r;
         if (this.player?.alive) {
             const dx = this.player.container.x - x, dy = this.player.container.y - y;
-            if (Math.sqrt(dx*dx+dy*dy) < r) this.player.takeDamage(35);
+            if (dx*dx + dy*dy < rSq) this.player.takeDamage(35);
         }
         for (const e of this.enemies) {
             if (!e.alive) continue;
             const dx = e.container.x - x, dy = e.container.y - y;
-            if (Math.sqrt(dx*dx+dy*dy) < r) e.takeDamage(50);
+            if (dx*dx + dy*dy < rSq) e.takeDamage(50);
         }
         if (this.onlineMode && this.onlineSync) {
-            for (const [sid, rp] of this.onlineSync.remotePlayers.entries()) {
+            for (const rp of this.onlineSync.remotePlayers.values()) {
                 if (!rp.alive) continue;
                 const dx = rp.container.x - x, dy = rp.container.y - y;
-                if (Math.sqrt(dx*dx+dy*dy) < r) {
+                if (dx*dx + dy*dy < rSq) {
                     // Similar to bullets, local hit effect only. Server handles real damage via the 'shoot' event if synced.
                     // Or if grenades aren't synced server-side, we'd need to emit a hit.
                     // For now, the visual effect is what matters locally.
@@ -823,7 +946,38 @@ export class GameScene extends Phaser.Scene {
     _setupCollisions() {
         this.physics.add.collider(this.player.container, this.wallGroup);
 
+        if (!this._bulletWorldBoundsHandler) {
+            const world = this.physics?.world;
+            if (world) {
+                const worldRef = world;
+                const worldBoundsHandler = (body) => {
+                    const bullet = body?.gameObject;
+                    if (!bullet || !bullet.active || !this.bulletGroup.contains(bullet)) return;
+                    if (bullet.getData('isExplosive')) {
+                        this._createExplosion(bullet.x, bullet.y, bullet.getData('explosionRadius') || 80);
+                    }
+                    this._recycleBullet(bullet);
+                };
+                this._bulletWorldBoundsHandler = worldBoundsHandler;
+                this._bulletWorldRef = worldRef;
+                worldRef.on('worldbounds', worldBoundsHandler);
+
+                const cleanupWorldBounds = () => {
+                    if (worldRef && typeof worldRef.off === 'function') {
+                        worldRef.off('worldbounds', worldBoundsHandler);
+                    }
+                    if (this._bulletWorldBoundsHandler === worldBoundsHandler) this._bulletWorldBoundsHandler = null;
+                    if (this._bulletWorldRef === worldRef) this._bulletWorldRef = null;
+                };
+
+                this.sys.events.once(Phaser.Scenes.Events.SHUTDOWN, cleanupWorldBounds);
+                this.sys.events.once(Phaser.Scenes.Events.DESTROY, cleanupWorldBounds);
+            }
+        }
+
         this.physics.add.collider(this.bulletGroup, this.wallGroup, (bullet) => {
+            const wallGraceUntil = bullet.getData('wallGraceUntil') || 0;
+            if (Date.now() < wallGraceUntil) return;
             if (bullet.getData('isExplosive')) this._createExplosion(bullet.x, bullet.y, bullet.getData('explosionRadius') || 80);
             this._recycleBullet(bullet);
         });
@@ -837,31 +991,97 @@ export class GameScene extends Phaser.Scene {
 
         // Bullet↔enemy + barrel (80ms instead of 40ms for perf)
         this.time.addEvent({
-            delay: 80, loop: true,
+            delay: this.performanceProfile.collisionIntervalMs, loop: true,
             callback: () => this._checkBulletCollisions(),
         });
     }
 
     _createExplosion(x, y, radius) {
-        const c = this.add.circle(x, y, 6, 0xff6600, 0.85).setDepth(100);
+        // Use pool — find an inactive circle or fall back to creating a new one
+        let c = this.explosionPool.find(o => !o.active);
+        if (!c) {
+            c = this.add.circle(0, 0, 6, 0xff6600, 0.85).setDepth(100);
+            this.explosionPool.push(c);
+        }
+        c.setPosition(x, y).setActive(true).setVisible(true).setAlpha(0.85).setScale(1);
+        c.setFillStyle(0xff6600, 0.85);
         this.cameras.main.shake(150, 0.01);
-        this.tweens.add({ targets: c, scaleX: radius/6, scaleY: radius/6, alpha: 0, duration: 280, ease: 'Power2', onComplete: () => c.destroy() });
+        this.tweens.killTweensOf(c);
+        this.tweens.add({
+            targets: c,
+            scaleX: radius / 6,
+            scaleY: radius / 6,
+            alpha: 0,
+            duration: 280,
+            ease: 'Power2',
+            onComplete: () => { c.setActive(false).setVisible(false).setScale(1); },
+        });
+        const radiusSq = radius * radius;
         for (const e of this.enemies) {
             if (!e.alive) continue;
             const dx = e.container.x - x, dy = e.container.y - y;
-            if (Math.sqrt(dx*dx+dy*dy) < radius) e.takeDamage(25);
+            if (dx*dx + dy*dy < radiusSq) e.takeDamage(25);
         }
+    }
+
+    _segmentPointDistanceSq(x1, y1, x2, y2, px, py) {
+        const sx = x2 - x1;
+        const sy = y2 - y1;
+        const segLenSq = sx * sx + sy * sy;
+        if (segLenSq <= 0.0001) {
+            const dx = px - x1;
+            const dy = py - y1;
+            return dx * dx + dy * dy;
+        }
+        let t = ((px - x1) * sx + (py - y1) * sy) / segLenSq;
+        t = Phaser.Math.Clamp(t, 0, 1);
+        const cx = x1 + sx * t;
+        const cy = y1 + sy * t;
+        const dx = px - cx;
+        const dy = py - cy;
+        return dx * dx + dy * dy;
     }
 
     _checkBulletCollisions() {
         const bullets = this.bulletGroup.getChildren();
+        const barrelHitSq = 14 * 14;
+        const enemyHitSq = 18 * 18;
+        const botHitSq = 16 * 16;
+        const playerHitSq = 18 * 18;
+        let camMinX = -Infinity;
+        let camMinY = -Infinity;
+        let camMaxX = Infinity;
+        let camMaxY = Infinity;
+        if (this.performanceProfile.lowEnd) {
+            const cam = this.cameras.main;
+            const vw = cam.width / (cam.zoom || 1);
+            const vh = cam.height / (cam.zoom || 1);
+            const margin = 220;
+            camMinX = cam.scrollX - margin;
+            camMinY = cam.scrollY - margin;
+            camMaxX = cam.scrollX + vw + margin;
+            camMaxY = cam.scrollY + vh + margin;
+        }
         for (const b of bullets) {
             if (!b.active) continue;
+            if (b.x < camMinX || b.x > camMaxX || b.y < camMinY || b.y > camMaxY) {
+                b.setData('prevX', b.x);
+                b.setData('prevY', b.y);
+                continue;
+            }
+
+            const prevX = b.getData('prevX');
+            const prevY = b.getData('prevY');
+            const fromX = Number.isFinite(prevX) ? prevX : b.x;
+            const fromY = Number.isFinite(prevY) ? prevY : b.y;
+            const toX = b.x;
+            const toY = b.y;
+
             // Barrels
             for (const barrel of this.trapSystem.getBarrels()) {
                 if (barrel.getData('exploded')) continue;
-                const dx = b.x - barrel.x, dy = b.y - barrel.y;
-                if (Math.sqrt(dx*dx+dy*dy) < 14) {
+                const dSq = this._segmentPointDistanceSq(fromX, fromY, toX, toY, barrel.x, barrel.y);
+                if (dSq < barrelHitSq) {
                     this.trapSystem.damageBarrel(barrel, b.getData('damage') || 10);
                     this._recycleBullet(b); break;
                 }
@@ -870,8 +1090,8 @@ export class GameScene extends Phaser.Scene {
             // Enemies
             for (const e of this.enemies) {
                 if (!e.alive) continue;
-                const dx = b.x - e.container.x, dy = b.y - e.container.y;
-                if (Math.sqrt(dx*dx+dy*dy) < 18) {
+                const dSq = this._segmentPointDistanceSq(fromX, fromY, toX, toY, e.container.x, e.container.y);
+                if (dSq < enemyHitSq) {
                     e.takeDamage(b.getData('damage') || 10);
                     if (b.getData('isExplosive')) this._createExplosion(b.x, b.y, b.getData('explosionRadius') || 80);
                     this._recycleBullet(b); break;
@@ -885,8 +1105,8 @@ export class GameScene extends Phaser.Scene {
                 if (!bot.alive) continue;
                 // Skip if this bullet was fired BY this bot
                 if (owner === 'bot_' + bot.index) continue;
-                const dx = b.x - bot.container.x, dy = b.y - bot.container.y;
-                if (Math.sqrt(dx*dx+dy*dy) < 16) {
+                const dSq = this._segmentPointDistanceSq(fromX, fromY, toX, toY, bot.container.x, bot.container.y);
+                if (dSq < botHitSq) {
                     bot.takeDamage(b.getData('damage') || 10);
                     this._recycleBullet(b);
                     break;
@@ -895,8 +1115,8 @@ export class GameScene extends Phaser.Scene {
             if (!b.active) continue;
             // Bot bullets hit the real player
             if (owner.startsWith('bot_') && this.player?.alive) {
-                const dx = b.x - this.player.container.x, dy = b.y - this.player.container.y;
-                if (Math.sqrt(dx*dx+dy*dy) < 18) {
+                const dSq = this._segmentPointDistanceSq(fromX, fromY, toX, toY, this.player.container.x, this.player.container.y);
+                if (dSq < playerHitSq) {
                     this.player.takeDamage(b.getData('damage') || 10);
                     this._recycleBullet(b);
                 }
@@ -909,8 +1129,8 @@ export class GameScene extends Phaser.Scene {
                     // Don't hit yourself with your own bullets
                     if (owner === 'player' && sid === this.onlineSync.mySessionId) continue;
                     
-                    const dx = b.x - rp.container.x, dy = b.y - rp.container.y;
-                    if (Math.sqrt(dx*dx+dy*dy) < 18) {
+                    const dSq = this._segmentPointDistanceSq(fromX, fromY, toX, toY, rp.container.x, rp.container.y);
+                    if (dSq < enemyHitSq) {
                         // In a fully authoritative server, we'd send a "hit" event.
                         // Here, because we send 'shoot' to the server, the server calculates hits automatically 
                         // and broadcasts health updates via state_tick.
@@ -923,18 +1143,95 @@ export class GameScene extends Phaser.Scene {
                     }
                 }
             }
+            if (b.active) {
+                b.setData('prevX', b.x);
+                b.setData('prevY', b.y);
+            }
         }
         // Portal
         if (this.keySystem.portal && this.player?.alive) {
             const dx = this.player.container.x - this.keySystem.portal.x;
             const dy = this.player.container.y - this.keySystem.portal.y;
-            if (Math.sqrt(dx*dx+dy*dy) < 30) this.keySystem.enterPortal(this.player);
+            if (dx*dx + dy*dy < 30 * 30) this.keySystem.enterPortal(this.player);
         }
 
         // Wormholes (Offline only - Online handled by server)
         if (!this.onlineMode && this.player?.alive) {
             this._checkWormholeCollisions(this.player.container, this.player);
         }
+    }
+
+    _buildPerformanceProfile() {
+        const cores = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) ? navigator.hardwareConcurrency : 4;
+        const deviceMemory = (typeof navigator !== 'undefined' && navigator.deviceMemory) ? navigator.deviceMemory : 4;
+        const isMobile = !this.sys.game.device.os.desktop;
+        const lowEnd = isMobile && (cores <= 4 || deviceMemory <= 4);
+
+        return {
+            lowEnd,
+            starCount: lowEnd ? 90 : 200,
+            maxBullets: lowEnd ? 50 : 80,
+            collisionIntervalMs: lowEnd ? 120 : 80,
+            enemyUpdateStride: lowEnd ? 2 : 1,
+        };
+    }
+
+    _setupKeyboardInput() {
+        const kb = this.input?.keyboard;
+        if (!kb) return;
+
+        kb.enabled = true;
+        kb.resetKeys();
+        if (typeof kb.addCapture === 'function') {
+            kb.addCapture(['W', 'A', 'S', 'D', 'UP', 'DOWN', 'LEFT', 'RIGHT', 'SPACE', 'G', 'B']);
+        }
+
+        const focusCanvas = () => {
+            const canvas = this.game?.canvas;
+            if (!canvas || typeof canvas.focus !== 'function') return;
+            if (!canvas.hasAttribute('tabindex')) canvas.setAttribute('tabindex', '0');
+            canvas.focus();
+        };
+
+        const inputRef = this.input;
+        this._focusCanvasHandler = focusCanvas;
+        if (inputRef && typeof inputRef.on === 'function') {
+            inputRef.on('pointerdown', this._focusCanvasHandler);
+        }
+        this.time.delayedCall(0, focusCanvas);
+
+        const onWindowBlur = () => kb.resetKeys();
+        const onWindowFocus = () => {
+            kb.enabled = true;
+            kb.resetKeys();
+            focusCanvas();
+        };
+        const onVisibility = () => {
+            if (document.hidden) kb.resetKeys();
+        };
+
+        if (typeof window !== 'undefined') {
+            window.addEventListener('blur', onWindowBlur);
+            window.addEventListener('focus', onWindowFocus);
+        }
+        if (typeof document !== 'undefined') {
+            document.addEventListener('visibilitychange', onVisibility);
+        }
+
+        this.sys.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+            if (this._focusCanvasHandler && inputRef && typeof inputRef.off === 'function') {
+                inputRef.off('pointerdown', this._focusCanvasHandler);
+            }
+            this._focusCanvasHandler = null;
+            if (typeof window !== 'undefined') {
+                window.removeEventListener('blur', onWindowBlur);
+                window.removeEventListener('focus', onWindowFocus);
+            }
+            if (typeof document !== 'undefined') {
+                document.removeEventListener('visibilitychange', onVisibility);
+            }
+            kb.resetKeys();
+        });
     }
 
     // ═══ HUD DATA ═══
@@ -949,27 +1246,6 @@ export class GameScene extends Phaser.Scene {
             wave:         this.waveSpawner ? this.waveSpawner.getCurrentWave() : 0,
             kills:        this.killCount,
         });
-    }
-
-    // ═══ MAIN UPDATE LOOP ═══
-    update(time, delta) {
-        if (this.player) {
-            this.player.update(time, delta);
-        }
-
-        if (this.onlineMode && this.onlineSync) {
-            this.onlineSync.update(time, delta);
-        }
-
-        if (this.bots) {
-            for (const bot of this.bots) {
-                if (bot.update) bot.update(time, delta);
-            }
-        }
-
-        for (const enemy of this.enemies) {
-            if (enemy.update) enemy.update(time, delta);
-        }
     }
 
     getMinimapData() {
@@ -988,4 +1264,3 @@ export class GameScene extends Phaser.Scene {
         };
     }
 }
-

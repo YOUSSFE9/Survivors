@@ -6,7 +6,7 @@
  */
 import { io, Socket } from 'socket.io-client';
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'https://daht-server.onrender.com';
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:2567';
 
 /**
  * SocketRoom wraps a socket connection and mimics the Colyseus Room interface

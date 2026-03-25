@@ -2,8 +2,6 @@
  * Enemy — Smart AI with BFS pathfinding. Recomputes path every 1s to navigate walls.
  * Supports: zombie, monster, ghost.
  */
-import Phaser from 'phaser';
-import { Pathfinder } from '../systems/Pathfinder';
 
 export const ENEMY_TYPES = {
     zombie: { name: 'Zombie', health: 60, speed: 58, damage: 8, attackRate: 1000, size: 11, canPhase: false, points: 1 },
@@ -21,12 +19,13 @@ export class Enemy {
         this.alive = true;
         this.lastAttackTime = 0;
         this.isFlashing = false;
+        this.lowFx = !!scene.performanceProfile?.lowEnd;
 
         // BFS pathfinding
         this.pathfinder = null;
         this.path = [];
         this.pathTimer = 0;
-        this.pathUpdateInterval = 1500 + Math.random() * 1000; // stagger between enemies (perf)
+        this.pathUpdateInterval = (1500 + Math.random() * 1000) * (this.lowFx ? 1.4 : 1); // stagger between enemies (perf)
 
         // Container
         this.container = scene.add.container(x, y);
@@ -72,26 +71,30 @@ export class Enemy {
         if (!this.alive) return;
 
         // Pick nearest target: real player or alive bot
-        let target = null, targetDist = Infinity;
+        let target = null, targetDistSq = Infinity;
         const ex = this.container.x, ey = this.container.y;
 
         const player = this.scene.player;
         if (player?.alive) {
-            const d = Phaser.Math.Distance.Between(ex, ey, player.container.x, player.container.y);
-            if (d < targetDist) { targetDist = d; target = player; }
+            const pdx = player.container.x - ex;
+            const pdy = player.container.y - ey;
+            const dSq = pdx * pdx + pdy * pdy;
+            if (dSq < targetDistSq) { targetDistSq = dSq; target = player; }
         }
 
         for (const bot of (this.scene.bots || [])) {
             if (!bot.alive) continue;
-            const d = Phaser.Math.Distance.Between(ex, ey, bot.container.x, bot.container.y);
-            if (d < targetDist) { targetDist = d; target = bot; }
+            const bdx = bot.container.x - ex;
+            const bdy = bot.container.y - ey;
+            const dSq = bdx * bdx + bdy * bdy;
+            if (dSq < targetDistSq) { targetDistSq = dSq; target = bot; }
         }
 
         if (!target) return;
 
         const px = target.container.x, py = target.container.y;
         const dx = px - ex, dy = py - ey;
-        const dist = targetDist;
+        const dist = Math.sqrt(targetDistSq);
 
         // Attack range
         if (dist < 22) {
@@ -162,16 +165,18 @@ export class Enemy {
             });
         }
 
-        // Floating damage number
-        const dmgText = this.scene.add.text(
-            this.container.x, this.container.y - 24,
-            `-${amount}`,
-            { fontFamily: 'Outfit, sans-serif', fontSize: '14px', color: '#ff4444', fontStyle: 'bold', stroke: '#000', strokeThickness: 2 }
-        ).setOrigin(0.5).setDepth(200);
-        this.scene.tweens.add({
-            targets: dmgText, y: dmgText.y - 32, alpha: 0, duration: 600,
-            onComplete: () => dmgText.destroy(),
-        });
+        // Disable floating combat text on low-end devices to avoid frame spikes.
+        if (!this.lowFx) {
+            const dmgText = this.scene.add.text(
+                this.container.x, this.container.y - 24,
+                `-${amount}`,
+                { fontFamily: 'Outfit, sans-serif', fontSize: '14px', color: '#ff4444', fontStyle: 'bold', stroke: '#000', strokeThickness: 2 }
+            ).setOrigin(0.5).setDepth(200);
+            this.scene.tweens.add({
+                targets: dmgText, y: dmgText.y - 32, alpha: 0, duration: 600,
+                onComplete: () => dmgText.destroy(),
+            });
+        }
 
         if (this.health <= 0) this.die();
     }
@@ -185,7 +190,8 @@ export class Enemy {
         }
 
         // Death particles
-        for (let i = 0; i < 7; i++) {
+        const particles = this.lowFx ? 3 : 7;
+        for (let i = 0; i < particles; i++) {
             const p = this.scene.add.circle(
                 this.container.x + (Math.random() - 0.5) * 24,
                 this.container.y + (Math.random() - 0.5) * 24,

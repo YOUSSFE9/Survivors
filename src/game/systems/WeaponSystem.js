@@ -59,8 +59,7 @@ export class WeaponSystem {
       x, y, vx, vy,
       weapon.damage,
       weapon.isExplosive,
-      weapon.explosionRadius || 0,
-      weaponKey
+      weapon.explosionRadius || 0
     );
 
     return bullet;

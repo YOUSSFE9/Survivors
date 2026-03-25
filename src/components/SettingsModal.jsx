@@ -1,8 +1,8 @@
 /**
  * SettingsModal — Gear button with player ID display and language selector.
  */
-import { useState, useEffect } from 'react';
-import T, { LANGUAGES, getSavedLang, saveLang } from '../i18n/translations';
+import { useState } from 'react';
+import T, { LANGUAGES, saveLang } from '../i18n/translations';
 
 // Generate or retrieve a persistent player ID
 function getPlayerId() {
@@ -14,16 +14,14 @@ function getPlayerId() {
     return id;
 }
 
-export default function SettingsModal({ onLangChange }) {
+export default function SettingsModal({ lang, onLangChange }) {
     const [open, setOpen] = useState(false);
-    const [lang, setLang] = useState(getSavedLang());
     const [playerId] = useState(getPlayerId);
     const [copied, setCopied] = useState(false);
 
     const t = T[lang] || T['ar'];
 
     const handleLang = (code) => {
-        setLang(code);
         saveLang(code);
         if (onLangChange) onLangChange(code);
     };
@@ -34,12 +32,14 @@ export default function SettingsModal({ onLangChange }) {
         setTimeout(() => setCopied(false), 2000);
     };
 
+    const isRtl = t.dir === 'rtl';
+
     return (
         <>
             {/* Gear Button */}
             <button
                 onClick={() => setOpen(true)}
-                style={S.gearBtn}
+                style={{ ...S.gearBtn, right: isRtl ? 'auto' : 16, left: isRtl ? 16 : 'auto' }}
                 title={t.settings}
                 id="btn-settings"
             >
@@ -49,7 +49,7 @@ export default function SettingsModal({ onLangChange }) {
             {/* Modal Backdrop */}
             {open && (
                 <div style={S.backdrop} onClick={() => setOpen(false)}>
-                    <div style={S.modal} onClick={e => e.stopPropagation()}>
+                    <div style={{ ...S.modal, direction: t.dir }} onClick={e => e.stopPropagation()}>
                         <div style={S.header}>
                             <span style={S.title}>⚙️ {t.settings}</span>
                             <button style={S.closeBtn} onClick={() => setOpen(false)}>{t.close} ✕</button>

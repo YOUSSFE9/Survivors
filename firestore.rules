@@ -1,0 +1,204 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function isAdmin() {
+      return signedIn() && (
+        request.auth.token.admin == true ||
+        request.auth.token.email == 'deathrace5j@gmail.com'
+      );
+    }
+
+    function playerCoinsDeltaAllowed() {
+      let oldCoins = resource.data.goldCoins is int ? resource.data.goldCoins : 0;
+      let newCoins = request.resource.data.goldCoins is int ? request.resource.data.goldCoins : oldCoins;
+      let delta = newCoins - oldCoins;
+      return newCoins >= 0
+        && newCoins <= 1000000
+        && (
+          (delta >= -10 && delta <= 10) ||
+          (delta < -10 && request.resource.data.lastWithdrawalAt == request.time)
+        );
+    }
+
+    function validPlayerCreate(userId) {
+      return request.resource.data.keys().hasOnly([
+          'uid', 'displayName', 'photoURL', 'country',
+          'level', 'xp', 'kills', 'wins',
+          'createdAt', 'lastSeen',
+          'goldCoins', 'goldHistory',
+          'lastWithdrawalAt'
+        ])
+        && (!('uid' in request.resource.data) || request.resource.data.uid == userId)
+        && (!('displayName' in request.resource.data) || (
+            request.resource.data.displayName is string &&
+            request.resource.data.displayName.size() > 0 &&
+            request.resource.data.displayName.size() <= 40
+        ))
+        && (!('photoURL' in request.resource.data) || request.resource.data.photoURL is string)
+        && (!('country' in request.resource.data) || (
+            request.resource.data.country is string &&
+            request.resource.data.country.size() == 2
+        ))
+        && (!('createdAt' in request.resource.data) || request.resource.data.createdAt == request.time)
+        && (!('lastSeen' in request.resource.data) || request.resource.data.lastSeen == request.time)
+        && (!('goldCoins' in request.resource.data) || (
+            request.resource.data.goldCoins is int &&
+            request.resource.data.goldCoins >= 0 &&
+            request.resource.data.goldCoins <= 1000000
+        ))
+        && (!('lastWithdrawalAt' in request.resource.data) || request.resource.data.lastWithdrawalAt is timestamp);
+    }
+
+    function validPlayerUpdate(userId) {
+      return (!('uid' in request.resource.data) || request.resource.data.uid == userId)
+        && (!('displayName' in request.resource.data) || (
+            request.resource.data.displayName is string &&
+            request.resource.data.displayName.size() > 0 &&
+            request.resource.data.displayName.size() <= 40
+        ))
+        && (!('photoURL' in request.resource.data) || request.resource.data.photoURL is string)
+        && (!('country' in request.resource.data) || (
+            request.resource.data.country is string &&
+            request.resource.data.country.size() == 2
+        ))
+        && (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt)
+        && (!('lastSeen' in request.resource.data) || request.resource.data.lastSeen is timestamp)
+        && playerCoinsDeltaAllowed();
+    }
+
+    function validDailyStatsCreate(userId, statId) {
+      return statId == (userId + "_" + request.resource.data.day)
+        && request.resource.data.keys().hasOnly([
+          'uid', 'displayName', 'photoURL', 'country',
+          'day', 'monsterKills', 'portalsOpened', 'keysCollected'
+        ])
+        && request.resource.data.uid == userId
+        && request.resource.data.day is string
+        && request.resource.data.day.matches('^\\d{4}-\\d{2}-\\d{2}$')
+        && request.resource.data.displayName is string
+        && request.resource.data.photoURL is string
+        && request.resource.data.country is string
+        && request.resource.data.monsterKills is int
+        && request.resource.data.portalsOpened is int
+        && request.resource.data.keysCollected is int
+        && request.resource.data.monsterKills == 0
+        && request.resource.data.portalsOpened == 0
+        && request.resource.data.keysCollected == 0;
+    }
+
+    function validDailyStatsUpdate(userId, statId) {
+      return resource.data.uid == userId
+        && statId == (userId + "_" + resource.data.day)
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.day == resource.data.day
+        && request.resource.data.keys().hasOnly([
+          'uid', 'displayName', 'photoURL', 'country',
+          'day', 'monsterKills', 'portalsOpened', 'keysCollected'
+        ])
+        && request.resource.data.monsterKills is int
+        && request.resource.data.portalsOpened is int
+        && request.resource.data.keysCollected is int
+        && request.resource.data.monsterKills >= resource.data.monsterKills
+        && request.resource.data.monsterKills <= resource.data.monsterKills + 5
+        && request.resource.data.portalsOpened >= resource.data.portalsOpened
+        && request.resource.data.portalsOpened <= resource.data.portalsOpened + 1
+        && request.resource.data.keysCollected >= resource.data.keysCollected
+        && request.resource.data.keysCollected <= resource.data.keysCollected + 2;
+    }
+
+    function validAwardCreate(awardId) {
+      return request.resource.data.keys().hasOnly(['uid', 'day', 'reason', 'coins', 'awardedAt'])
+        && request.resource.data.uid == request.auth.uid
+        && awardId.matches('^' + request.auth.uid + '_.*$')
+        && request.resource.data.awardedAt == request.time
+        && (!('day' in request.resource.data) || request.resource.data.day is string)
+        && (!('reason' in request.resource.data) || request.resource.data.reason is string)
+        && (!('coins' in request.resource.data) || (
+          request.resource.data.coins is int &&
+          (request.resource.data.coins == 1 || request.resource.data.coins == 10)
+        ));
+    }
+
+    function validWithdrawalCreate(requestId) {
+      return requestId.matches('^' + request.auth.uid + '_[0-9]{10,}$')
+        && request.resource.data.keys().hasOnly([
+          'uid', 'displayName', 'name', 'whatsapp', 'email', 'method',
+          'goldAmount', 'usdAmount', 'status', 'createdAt',
+          'locationLayers', 'userAgent'
+        ])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() > 0
+        && request.resource.data.displayName.size() <= 40
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 2
+        && request.resource.data.name.size() <= 80
+        && request.resource.data.whatsapp is string
+        && request.resource.data.whatsapp.size() >= 6
+        && request.resource.data.whatsapp.size() <= 30
+        && request.resource.data.email is string
+        && request.resource.data.email.size() >= 5
+        && request.resource.data.email.size() <= 120
+        && request.resource.data.method is string
+        && request.resource.data.method.size() >= 2
+        && request.resource.data.method.size() <= 40
+        && request.resource.data.goldAmount is int
+        && request.resource.data.goldAmount >= 100
+        && request.resource.data.goldAmount <= 500000
+        && request.resource.data.usdAmount is number
+        && request.resource.data.usdAmount >= (request.resource.data.goldAmount / 10) - 0.01
+        && request.resource.data.usdAmount <= (request.resource.data.goldAmount / 10) + 0.01
+        && request.resource.data.status == 'pending'
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.locationLayers is list
+        && request.resource.data.userAgent is string;
+    }
+
+    match /players/{userId} {
+      allow read: if signedIn();
+      allow create: if isOwner(userId) && validPlayerCreate(userId);
+      allow update: if (isOwner(userId) && validPlayerUpdate(userId)) || isAdmin();
+      allow delete: if false;
+    }
+
+    match /daily_stats/{statId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && validDailyStatsCreate(request.resource.data.uid, statId) && isOwner(request.resource.data.uid);
+      allow update: if signedIn() && validDailyStatsUpdate(resource.data.uid, statId) && isOwner(resource.data.uid);
+      allow delete: if false;
+    }
+
+    match /daily_awards/{awardId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && validAwardCreate(awardId);
+      allow update, delete: if isAdmin();
+    }
+
+    match /withdrawal_requests/{requestId} {
+      allow create: if signedIn() && validWithdrawalCreate(requestId);
+      allow read: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
+      allow update, delete: if isAdmin();
+    }
+
+    // Legacy collections are fully closed.
+    match /goldCoins/{userId} {
+      allow read, write: if false;
+    }
+
+    match /withdrawals/{docId} {
+      allow read, write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

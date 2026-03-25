@@ -1,5 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { fetchLeaderboard, getGoldBalance, getDailyStats, getDailyKey, firebaseEnabled } from '../firebase/config';
+import {
+  fetchLeaderboard,
+  getGoldBalance,
+  getDailyStats,
+  submitWithdrawalRequest,
+  COINS_PER_USD,
+  MIN_WITHDRAW_COINS,
+} from '../firebase/config';
+import AdminPanel from './AdminPanel';
+import T from '../i18n/translations';
 
 interface LeaderEntry {
   rank: number;
@@ -13,6 +22,7 @@ interface LeaderEntry {
 
 interface Props {
   user: any;
+  lang: string;
   onClose: () => void;
 }
 
@@ -30,7 +40,17 @@ function formatCountdown(ms: number) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
 }
 
-export default function PrizesModal({ user, onClose }: Props) {
+function getFlagEmoji(countryCode: string) {
+  if (!countryCode || countryCode === 'UN' || countryCode.length !== 2) return '🏳️';
+  const codePoints = countryCode
+    .toUpperCase()
+    .split('')
+    .map(char => 127397 + char.charCodeAt(0));
+  return String.fromCodePoint(...codePoints);
+}
+
+export default function PrizesModal({ user, lang, onClose }: Props) {
+  const t: any = (T as any)[lang] || T['ar'];
   const [tab, setTab] = useState<'killers' | 'survivors' | 'wallet'>('killers');
   const [killersBoard, setKillersBoard] = useState<LeaderEntry[]>([]);
   const [survivorsBoard, setSurvivorsBoard] = useState<LeaderEntry[]>([]);
@@ -38,28 +58,32 @@ export default function PrizesModal({ user, onClose }: Props) {
   const [myStats, setMyStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [countdown, setCountdown] = useState(msUntilMidnightUTC());
-  const [withdrawReq, setWithdrawReq] = useState('');
   const [withdrawSent, setWithdrawSent] = useState(false);
+  const [showAdmin, setShowAdmin] = useState(false);
 
   // Countdown every second
   useEffect(() => {
-    const t = setInterval(() => setCountdown(msUntilMidnightUTC()), 1000);
-    return () => clearInterval(t);
+    const timer = setInterval(() => setCountdown(msUntilMidnightUTC()), 1000);
+    return () => clearInterval(timer);
   }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [kb, sb, bal, stats] = await Promise.all([
+      let stats = null;
+      if (user) {
+        stats = await getDailyStats(user.uid, user.displayName, user.photoURL);
+        setMyStats(stats);
+      }
+      
+      const [kb, sb, bal] = await Promise.all([
         fetchLeaderboard('monsterKills'),
         fetchLeaderboard('portalsOpened'),
         user ? getGoldBalance(user.uid) : Promise.resolve(0),
-        user ? getDailyStats(user.uid, user.displayName, user.photoURL) : Promise.resolve(null),
       ]);
       setKillersBoard(kb as LeaderEntry[]);
       setSurvivorsBoard(sb as LeaderEntry[]);
       setGoldBalance(bal);
-      setMyStats(stats);
     } finally {
       setLoading(false);
     }
@@ -78,19 +102,32 @@ export default function PrizesModal({ user, onClose }: Props) {
           <div style={S.headerLeft}>
             <span style={S.trophy}>🏆</span>
             <div>
-              <h2 style={S.title}>جوائز المحترفين</h2>
-              <p style={S.subtitle}>مسابقات يومية — تصفير كل 24 ساعة</p>
+              <h2 style={S.title}>{t.prizesTitle}</h2>
+              <p style={S.subtitle}>{t.pzDailySub}</p>
             </div>
           </div>
-          <div style={S.headerRight}>
-            <div style={S.goldBadge}>
-              <span style={{ fontSize: 18 }}>🪙</span>
-              <span style={S.goldNum}>{goldBalance}</span>
-              <span style={S.goldLabel}>عملة</span>
-            </div>
-            <div style={S.countdownBox}>
-              <span style={S.countdownLabel}>تصفير خلال</span>
-              <span style={S.countdownVal}>{formatCountdown(countdown)}</span>
+          <div style={{ ...S.headerRight, flexDirection: 'row', alignItems: 'center' }}>
+            {user?.email === 'deathrace5j@gmail.com' && (
+              <button
+                onClick={() => setShowAdmin(true)}
+                style={{
+                  padding: '6px 14px', borderRadius: 12, border: '1px solid rgba(68,136,255,0.4)',
+                  background: 'rgba(68,136,255,0.1)', color: '#88aaff', fontWeight: 800, fontSize: 13, cursor: 'pointer'
+                }}
+              >
+                {t.pzAdminPanel}
+              </button>
+            )}
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+              <div style={S.goldBadge}>
+                <span style={{ fontSize: 18 }}>🪙</span>
+                <span style={S.goldNum}>{goldBalance}</span>
+                <span style={S.goldLabel}>{t.pzCoin}</span>
+              </div>
+              <div style={S.countdownBox}>
+                <span style={S.countdownLabel}>{t.pzResetIn}</span>
+                <span style={S.countdownVal}>{formatCountdown(countdown)}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -98,16 +135,16 @@ export default function PrizesModal({ user, onClose }: Props) {
         {/* Tabs */}
         <div style={S.tabs}>
           {([
-            { key: 'killers',   icon: '💀', label: 'تصنيف القتلة' },
-            { key: 'survivors', icon: '🚪', label: 'تصنيف الناجين' },
-            { key: 'wallet',    icon: '💰', label: 'المحفظة' },
-          ] as const).map(t => (
+            { key: 'killers',   icon: '💀', label: t.pzTabKillers },
+            { key: 'survivors', icon: '🚪', label: t.pzTabSurvivors },
+            { key: 'wallet',    icon: '💰', label: t.pzTabWallet },
+          ] as const).map(tabData => (
             <button
-              key={t.key}
-              style={{ ...S.tab, ...(tab === t.key ? S.tabActive : {}) }}
-              onClick={() => setTab(t.key)}
+              key={tabData.key}
+              style={{ ...S.tab, ...(tab === tabData.key ? S.tabActive : {}) }}
+              onClick={() => setTab(tabData.key)}
             >
-              {t.icon} {t.label}
+              {tabData.icon} {tabData.label}
             </button>
           ))}
         </div>
@@ -115,13 +152,14 @@ export default function PrizesModal({ user, onClose }: Props) {
         {/* Content */}
         <div style={S.content}>
           {loading ? (
-            <div style={S.loading}>⟳ جارِ التحميل...</div>
+            <div style={S.loading}>⟳ {t.connecting}</div>
           ) : tab === 'killers' ? (
             <KillersTab
               board={killersBoard}
               myUid={user?.uid}
               myRank={myRankKillers}
               myKills={myStats?.monsterKills || 0}
+              t={t}
             />
           ) : tab === 'survivors' ? (
             <SurvivorsTab
@@ -130,181 +168,332 @@ export default function PrizesModal({ user, onClose }: Props) {
               myRank={myRankSurvivors}
               myPortals={myStats?.portalsOpened || 0}
               myKeys={myStats?.keysCollected || 0}
+              t={t}
             />
           ) : (
             <WalletTab
               goldBalance={goldBalance}
-              withdrawReq={withdrawReq}
-              setWithdrawReq={setWithdrawReq}
+              setGoldBalance={setGoldBalance}
               withdrawSent={withdrawSent}
               setWithdrawSent={setWithdrawSent}
               user={user}
+              t={t}
             />
           )}
         </div>
 
-        <button style={S.closeBtn} onClick={onClose}>✕ إغلاق</button>
+        <button style={S.closeBtn} onClick={onClose}>✕ {t.close}</button>
       </div>
+
+      {/* Admin Panel Modal */}
+      {showAdmin && (
+        <AdminPanel user={user} t={t} onClose={() => setShowAdmin(false)} />
+      )}
     </div>
   );
 }
 
 /* ─────── Killers Tab ─────── */
-function KillersTab({ board, myUid, myRank, myKills }: any) {
+function KillersTab({ board, myUid, myRank, myKills, t }: any) {
   return (
     <div>
       <div style={S.prizeInfo}>
         <div style={S.prizeCard}>
           <div style={{ fontSize: 28 }}>🏆</div>
-          <div style={{ fontWeight: 700, fontSize: 15, color: '#ffd700' }}>الجائزة اليومية</div>
-          <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.6)', marginTop: 4 }}>
-            أعلى قاتل للوحوش يربح <strong style={{ color: '#ffd700' }}>5 عملات ذهبية 🪙</strong>
+          <div style={{ fontWeight: 700, fontSize: 13, color: 'rgba(255,255,255,0.9)', marginTop: 8, lineHeight: 1.5 }}>
+            {t.pzKillerRules}
+          </div>
+          <div style={{ fontWeight: 900, fontSize: 13, color: '#ffd700', marginTop: 8 }}>
+            {t.pzKillerPrize}
           </div>
         </div>
         <div style={S.myStatBox}>
           <div style={S.myStatNum}>{myKills}</div>
-          <div style={S.myStatLabel}>وحشاً قتلته اليوم</div>
-          {myRank > 0 && <div style={{ fontSize: 12, color: '#ffd700', marginTop: 4 }}>مرتبتك #{myRank}</div>}
+          <div style={S.myStatLabel}>{t.pzMonstersKilled}</div>
+          {myRank > 0 && <div style={{ fontSize: 12, color: '#ffd700', marginTop: 4 }}>{t.pzRank}{myRank}</div>}
         </div>
       </div>
       <div style={S.boardHeader}>
-        <span>#</span><span>اللاعب</span><span>الوحوش المقتولة</span>
+        <span>#</span><span>{t.pzCountry} | {t.pzPlayerName}</span><span>{t.pzKillsScore}</span>
       </div>
       {board.length === 0 ? (
-        <div style={S.empty}>لا يوجد لاعبون اليوم بعد — كن أول من يلعب! 🎮</div>
-      ) : board.map((e: any) => (
-        <div key={e.uid} style={{ ...S.boardRow, ...(e.uid === myUid ? S.myRow : {}) }}>
-          <span style={S.boardRank}>{rankIcon(e.rank)}</span>
-          <div style={S.playerCell}>
-            {e.photoURL ? <img src={e.photoURL} style={S.avatar} alt="" /> : <div style={S.avatarFallback}>{(e.displayName||'?')[0]}</div>}
-            <span style={{ fontSize: 13 }}>{e.displayName} {e.uid === myUid ? '(أنت)' : ''}</span>
-          </div>
-          <span style={S.scoreCell}>💀 {e.monsterKills}</span>
-        </div>
-      ))}
+        <div style={S.empty}>{t.pzEmpty}</div>
+      ) : (
+        <>
+          {board.map((e: any) => (
+            <div key={e.uid} style={{ ...S.boardRow, ...(e.uid === myUid ? S.myRow : {}) }}>
+              <span style={S.boardRank}>{rankIcon(e.rank)}</span>
+              <div style={S.playerCell}>
+                <span style={{ fontSize: 16 }}>{getFlagEmoji(e.country)}</span>
+                {e.photoURL ? <img src={e.photoURL} style={S.avatar} alt="" /> : <div style={S.avatarFallback}>{(e.displayName||'?')[0]}</div>}
+                <span style={{ fontSize: 13 }}>{e.displayName} {e.uid === myUid ? `(${t.you})` : ''}</span>
+              </div>
+              <span style={S.scoreCell}>💀 {e.monsterKills}</span>
+            </div>
+          ))}
+          {/* Show current user at bottom if not in top list */}
+          {myRank > board.length && (
+            <div style={{ ...S.boardRow, ...S.myRow, marginTop: 10, borderStyle: 'dashed' }}>
+              <span style={S.boardRank}>#{myRank}</span>
+              <div style={S.playerCell}>
+                <span style={{ fontSize: 16 }}>{getFlagEmoji(localStorage.getItem('daht_player_country') || '')}</span>
+                <span style={{ fontSize: 13 }}>{t.hudPlayerYou}</span>
+              </div>
+              <span style={S.scoreCell}>💀 {myKills}</span>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
 
 /* ─────── Survivors Tab ─────── */
-function SurvivorsTab({ board, myUid, myRank, myPortals, myKeys }: any) {
+function SurvivorsTab({ board, myUid, myRank, myPortals, myKeys, t }: any) {
   const [showInfo, setShowInfo] = useState(false);
   return (
     <div>
       <div style={S.prizeInfo}>
         <div style={S.prizeCard}>
           <div style={{ fontSize: 28 }}>🚪</div>
-          <div style={{ fontWeight: 700, fontSize: 15, color: '#44ffaa' }}>الجائزة اليومية</div>
-          <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.6)', marginTop: 4 }}>
-            افتح 10 بوابات في يوم واحد → <strong style={{ color: '#44ffaa' }}>10 عملات ذهبية 🪙</strong>
+          <div style={{ fontWeight: 700, fontSize: 13, color: 'rgba(255,255,255,0.9)', marginTop: 8, lineHeight: 1.5 }}>
+            {t.pzSurvivorRules}
+          </div>
+          <div style={{ fontWeight: 900, fontSize: 13, color: '#44ffaa', marginTop: 8 }}>
+            {t.pzSurvivorPrize}
+          </div>
+          <div style={{ fontWeight: 700, fontSize: 11, color: '#ffd700', marginTop: 4 }}>
+            {t.pzSurvivorExtraPrize}
           </div>
           <button onClick={() => setShowInfo(v => !v)} style={S.infoBtn}>
-            {showInfo ? '▲ إخفاء' : 'ℹ️ كيف تعمل؟'}
+            {showInfo ? `▲ ${t.pzHide}` : `ℹ️ ${t.pzHowItWorks}`}
           </button>
         </div>
         <div style={S.myStatBox}>
-          <div style={{ ...S.myStatNum, color: '#44ffaa' }}>{myPortals}<span style={{ fontSize: 14, color: 'rgba(255,255,255,0.4)' }}> /10</span></div>
-          <div style={S.myStatLabel}>بوابة فتحتها اليوم</div>
-          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', marginTop: 2 }}>🔑 {myKeys} مفاتيح</div>
-          {myRank > 0 && <div style={{ fontSize: 12, color: '#44ffaa', marginTop: 4 }}>مرتبتك #{myRank}</div>}
+          <div style={{ ...S.myStatNum, color: '#44ffaa' }}>{myPortals}</div>
+          <div style={S.myStatLabel}>{t.pzPortalsOpened}</div>
+          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', marginTop: 2 }}>🔑 {myKeys} {t.pzKeys}</div>
+          {myRank > 0 && <div style={{ fontSize: 12, color: '#44ffaa', marginTop: 4 }}>{t.pzRank}{myRank}</div>}
         </div>
       </div>
       {showInfo && (
         <div style={S.infoBox}>
-          <p>📌 <strong>كيف تفتح بوابة؟</strong></p>
-          <p>اجمع <strong>10 مفاتيح</strong> في المتاهة → ستظهر البوابة → ادخلها لتفوز وتنتقل للمستوى التالي.</p>
-          <p>⏰ كل يوم يبدأ العد من صفر — المستوى والتقدم يتصفران يومياً.</p>
-          <p>🏆 من يفتح <strong>10 بوابات</strong> في نفس اليوم يربح <strong>10 عملات ذهبية</strong> مباشرة!</p>
+          <p>📌 <strong>{t.pzHowToOpen}</strong></p>
+          <p>{t.pzHowToOpenDesc}</p>
+          <p>⏰ {t.pzResetNote}</p>
         </div>
       )}
-      {/* Progress bar for 10-portals goal */}
-      <div style={{ margin: '12px 0' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'rgba(255,255,255,0.5)', marginBottom: 4 }}>
-          <span>تقدمك نحو جائزة اليوم</span>
-          <span>{myPortals}/10 بوابات</span>
-        </div>
-        <div style={S.progressBg}>
-          <div style={{ ...S.progressFill, width: `${Math.min(myPortals / 10 * 100, 100)}%` }} />
-        </div>
-      </div>
 
       <div style={S.boardHeader}>
-        <span>#</span><span>اللاعب</span><span>البوابات / المفاتيح</span>
+        <span>#</span><span>{t.pzCountry} | {t.pzPlayerName}</span><span>{t.pzPortalsKeys}</span>
       </div>
       {board.length === 0 ? (
-        <div style={S.empty}>لا يوجد لاعبون اليوم بعد — كن أول من يلعب! 🎮</div>
-      ) : board.map((e: any) => (
-        <div key={e.uid} style={{ ...S.boardRow, ...(e.uid === myUid ? S.myRow : {}) }}>
-          <span style={S.boardRank}>{rankIcon(e.rank)}</span>
-          <div style={S.playerCell}>
-            {e.photoURL ? <img src={e.photoURL} style={S.avatar} alt="" /> : <div style={S.avatarFallback}>{(e.displayName||'?')[0]}</div>}
-            <span style={{ fontSize: 13 }}>{e.displayName} {e.uid === myUid ? '(أنت)' : ''}</span>
-          </div>
-          <span style={S.scoreCell}>🚪 {e.portalsOpened} · 🔑 {e.keysCollected}</span>
-        </div>
-      ))}
+        <div style={S.empty}>{t.pzEmpty}</div>
+      ) : (
+        <>
+          {board.map((e: any) => (
+            <div key={e.uid} style={{ ...S.boardRow, ...(e.uid === myUid ? S.myRow : {}) }}>
+              <span style={S.boardRank}>{rankIcon(e.rank)}</span>
+              <div style={S.playerCell}>
+                <span style={{ fontSize: 16 }}>{getFlagEmoji(e.country)}</span>
+                {e.photoURL ? <img src={e.photoURL} style={S.avatar} alt="" /> : <div style={S.avatarFallback}>{(e.displayName||'?')[0]}</div>}
+                <span style={{ fontSize: 13 }}>{e.displayName} {e.uid === myUid ? `(${t.you})` : ''}</span>
+              </div>
+              <span style={S.scoreCell}>🚪 {e.portalsOpened} · 🔑 {e.keysCollected}</span>
+            </div>
+          ))}
+          {/* Show current user at bottom if not in top list */}
+          {myRank > board.length && (
+            <div style={{ ...S.boardRow, ...S.myRow, marginTop: 10, borderStyle: 'dashed' }}>
+              <span style={S.boardRank}>#{myRank}</span>
+              <div style={S.playerCell}>
+                <span style={{ fontSize: 16 }}>{getFlagEmoji(localStorage.getItem('daht_player_country') || '')}</span>
+                <span style={{ fontSize: 13 }}>{t.hudPlayerYou}</span>
+              </div>
+              <span style={S.scoreCell}>🚪 {myPortals} · 🔑 {myKeys}</span>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
 
 /* ─────── Wallet Tab ─────── */
-function WalletTab({ goldBalance, withdrawReq, setWithdrawReq, withdrawSent, setWithdrawSent, user }: any) {
-  const RATE = 100; // 100 gold = 1$
-  const usd = (goldBalance / RATE).toFixed(2);
+const METHODS = [
+  'PayPal', 'P2P Transfer', 'Western Union', 'Wise (TransferWise)', 'Binance Pay'
+];
 
-  const handleWithdraw = () => {
-    if (!withdrawReq.trim()) return;
-    setWithdrawSent(true);
+function WalletTab({ goldBalance, setGoldBalance, withdrawSent, setWithdrawSent, user, t }: any) {
+  const RATE = COINS_PER_USD;
+  const MIN_WITHDRAW = MIN_WITHDRAW_COINS;
+  const usd = (goldBalance / RATE).toFixed(2);
+  const [withdrawAmount, setWithdrawAmount] = useState(String(MIN_WITHDRAW));
+  const withdrawCoins = Math.floor(Number(withdrawAmount || 0));
+  const canWithdraw = Number.isFinite(withdrawCoins) &&
+    withdrawCoins >= MIN_WITHDRAW &&
+    withdrawCoins <= goldBalance;
+  const withdrawUsd = Number.isFinite(withdrawCoins) ? (withdrawCoins / RATE).toFixed(2) : '0.00';
+
+  const [name, setName] = useState('');
+  const [whatsapp, setWhatsapp] = useState('');
+  const [email, setEmail] = useState(user?.email || '');
+  const [method, setMethod] = useState('');
+  const [showMethods, setShowMethods] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  const isRtl = t?.dir === 'rtl';
+  const rateText = `Exchange Rate: ${RATE} coins = $1`;
+  const minWithdrawText = `Minimum withdrawal: ${MIN_WITHDRAW} coins.`;
+
+  const handleWithdraw = async () => {
+    if (!name || !whatsapp || !email || !method) return setError(`Warning: ${t.pzFillAll}`);
+    if (!Number.isFinite(withdrawCoins) || withdrawCoins < MIN_WITHDRAW) {
+      return setError(`Warning: minimum withdrawal is ${MIN_WITHDRAW} coins`);
+    }
+    if (withdrawCoins > goldBalance) {
+      return setError('Warning: insufficient balance for this amount');
+    }
+
+    setError('');
+    setSubmitting(true);
+    const result = await submitWithdrawalRequest({
+      uid: user?.uid,
+      displayName: user?.displayName || t.survivorPrefix,
+      name: name.trim(),
+      whatsapp: whatsapp.trim(),
+      email: email.trim(),
+      method,
+      goldAmount: withdrawCoins,
+    });
+    setSubmitting(false);
+    if (result?.ok) {
+      setWithdrawSent(true);
+      setGoldBalance((prev: number) => Math.max(0, prev - withdrawCoins));
+      setWithdrawAmount(String(MIN_WITHDRAW));
+    } else {
+      setError(`Warning: ${t.pzSubmitError}${result?.error || ''}`);
+    }
   };
 
   return (
-    <div style={{ direction: 'rtl' }}>
+    <div style={{ direction: isRtl ? 'rtl' : 'ltr' }}>
       {/* Balance */}
       <div style={S.walletHeader}>
         <div style={{ fontSize: 52 }}>🪙</div>
         <div>
           <div style={{ fontSize: 36, fontWeight: 900, color: '#ffd700' }}>{goldBalance}</div>
-          <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: 13 }}>عملة ذهبية ≈ <strong style={{ color: '#44ffaa' }}>${usd}</strong></div>
+          <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: 13 }}>{t.pzGoldBalance} <strong style={{ color: '#44ffaa' }}>${usd}</strong></div>
         </div>
       </div>
 
       {/* How to earn */}
       <div style={S.earnSection}>
-        <div style={S.earnTitle}>كيف تجمع العملات؟</div>
-        <div style={S.earnRow}><span>💀</span><span>كن أعلى قاتل للوحوش يومياً → <b>5 عملات</b></span></div>
-        <div style={S.earnRow}><span>🚪</span><span>افتح 10 بوابات في يوم واحد → <b>10 عملات</b></span></div>
-        <div style={S.rateNote}>سعر التحويل: <b style={{ color: '#ffd700' }}>100 عملة = 1 دولار</b></div>
+        <div style={S.earnTitle}>{t.pzHowToEarn}</div>
+        <div style={S.earnRow}><span>💀</span><span>{t.pzEarnKill}</span></div>
+        <div style={S.earnRow}><span>🚪</span><span>{t.pzEarnPortal}</span></div>
+        <div style={S.rateNote}><b style={{ color: '#ffd700' }}>{rateText}</b></div>
       </div>
 
       {/* Withdraw */}
       {withdrawSent ? (
         <div style={S.successBox}>
-          ✅ تم إرسال طلب السحب! سيتواصل معك الفريق خلال 48 ساعة.
+          {t.pzWithdrawSuccess}
         </div>
       ) : (
         <div style={S.withdrawSection}>
-          <div style={S.earnTitle}>طلب سحب رصيدك</div>
-          <p style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginBottom: 10 }}>
-            الحد الأدنى للسحب: 500 عملة ({(500/RATE).toFixed(0)}$). أدخل معلومات التواصل وسيتم مراجعة طلبك يدوياً.
-          </p>
-          <textarea
-            style={S.textarea}
-            placeholder={`اسمك الكامل\nرقم WhatsApp أو البريد الإلكتروني\nطريقة الاستلام (Wise, PayPal, تحويل بنكي...)`}
-            value={withdrawReq}
-            onChange={e => setWithdrawReq(e.target.value)}
-            rows={4}
-          />
+          <div style={S.earnTitle}>{t.pzWithdrawTitle}</div>
+          <p style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginBottom: 14 }}>{minWithdrawText}</p>
+
+          {/* Name */}
+          <div style={S.fieldGroup}>
+            <label style={S.fieldLabel}>{t.pzFullName}</label>
+            <input
+              style={S.inputField}
+              placeholder={t.pzFullNamePlaceholder}
+              value={name}
+              onChange={e => setName(e.target.value)}
+            />
+          </div>
+
+          {/* WhatsApp */}
+          <div style={S.fieldGroup}>
+            <label style={S.fieldLabel}>{t.pzWhatsapp}</label>
+            <input
+              style={S.inputField}
+              type="tel"
+              placeholder={t.pzWhatsappPlaceholder}
+              value={whatsapp}
+              onChange={e => setWhatsapp(e.target.value)}
+              dir="ltr"
+            />
+          </div>
+
+          {/* Email */}
+          <div style={S.fieldGroup}>
+            <label style={S.fieldLabel}>{t.pzEmail}</label>
+            <input
+              style={S.inputField}
+              type="email"
+              placeholder="example@gmail.com"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              dir="ltr"
+            />
+          </div>
+
+          {/* Amount */}
+          <div style={S.fieldGroup}>
+            <label style={S.fieldLabel}>{isRtl ? '💰 مبلغ السحب (عملات)' : '💰 Withdraw amount (coins)'}</label>
+            <input
+              style={S.inputField}
+              type="number"
+              min={MIN_WITHDRAW}
+              step={1}
+              value={withdrawAmount}
+              onChange={e => setWithdrawAmount(e.target.value)}
+              dir="ltr"
+            />
+            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)', marginTop: 5 }}>
+              {isRtl ? `القيمة التقريبية: $${withdrawUsd}` : `Estimated value: $${withdrawUsd}`}
+            </div>
+          </div>
+
+          {/* Method */}
+          <div style={S.fieldGroup}>
+            <label style={S.fieldLabel}>{t.pzMethod}</label>
+            <button
+              style={{ ...S.inputField, textAlign: 'right' as const, cursor: 'pointer', background: method ? 'rgba(255,215,0,0.08)' : 'rgba(255,215,0,0.08)', border: method ? '1px solid rgba(255,215,0,0.4)' : '1px solid rgba(255,255,255,0.12)' }}
+              onClick={() => setShowMethods(v => !v)}
+            >
+              {method || t.pzSelectMethod}
+            </button>
+            {showMethods && (
+              <div style={S.methodDropdown}>
+                {METHODS.map(m => (
+                  <button key={m} style={S.methodOption} onClick={() => { setMethod(m); setShowMethods(false); }}>
+                    {m}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {error && <div style={{ color: '#ffaaaa', fontSize: 13, marginBottom: 12, fontWeight: 700 }}>{error}</div>}
+
           <button
             style={{
               ...S.withdrawBtn,
-              opacity: goldBalance < 500 ? 0.45 : 1,
-              cursor: goldBalance < 500 ? 'not-allowed' : 'pointer'
+              opacity: (canWithdraw && !submitting) ? 1 : 0.5
             }}
-            onClick={goldBalance >= 500 ? handleWithdraw : undefined}
+            onClick={canWithdraw && !submitting ? handleWithdraw : undefined}
+            disabled={!canWithdraw || submitting}
           >
-            {goldBalance < 500
-              ? `تحتاج ${500 - goldBalance} عملة إضافية للسحب`
-              : '📤 إرسال طلب السحب'}
+            {submitting
+              ? `⏳ ${t.pzSubmitting}`
+              : !canWithdraw
+                ? t.pzWithdrawNeed?.replace('{n}', (Math.max(0, MIN_WITHDRAW - withdrawCoins)).toString())
+                : `📤 ${t.pzSubmitRequest}`}
           </button>
         </div>
       )}
@@ -369,4 +558,13 @@ const S: any = {
   textarea: { width: '100%', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 10, color: '#fff', padding: '10px 12px', fontSize: 13, outline: 'none', resize: 'vertical' as const, boxSizing: 'border-box' as const, direction: 'rtl' },
   withdrawBtn: { display: 'block', width: '100%', marginTop: 12, padding: '12px 0', borderRadius: 12, border: 'none', background: 'linear-gradient(90deg,#ffd700,#ffaa00)', color: '#000', fontWeight: 900, fontSize: 15 },
   successBox: { background: 'rgba(68,255,170,0.1)', border: '1px solid rgba(68,255,170,0.3)', borderRadius: 14, padding: 20, textAlign: 'center' as const, color: '#44ffaa', fontSize: 14, fontWeight: 700 },
+  fieldGroup: { marginBottom: 12, position: 'relative' as const },
+  fieldLabel: { display: 'block', fontSize: 12, color: 'rgba(255,255,255,0.55)', fontWeight: 700, marginBottom: 5 },
+  inputField: { width: '100%', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, color: '#fff', padding: '10px 14px', fontSize: 13, outline: 'none', boxSizing: 'border-box' as const, fontFamily: 'Outfit,sans-serif', transition: 'border .2s' },
+  methodDropdown: { position: 'absolute' as const, top: '100%', left: 0, right: 0, background: '#12162a', border: '1px solid rgba(255,215,0,0.3)', borderRadius: 10, marginTop: 4, overflow: 'hidden', zIndex: 10, boxShadow: '0 10px 30px rgba(0,0,0,0.5)' },
+  methodOption: { display: 'block', width: '100%', background: 'transparent', border: 'none', borderBottom: '1px solid rgba(255,255,255,0.06)', color: '#eee', padding: '12px 14px', textAlign: 'right' as const, cursor: 'pointer', fontSize: 13, fontFamily: 'Outfit,sans-serif', transition: 'background .15s' },
 };
+
+
+
+
